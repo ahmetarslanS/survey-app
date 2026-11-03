@@ -37,4 +37,9 @@ public class Question {
     @OrderBy("answerOrder ASC")
     private List<Answer> answerList = new ArrayList<>();
 
+    public void addAnswer(Answer answer) {
+    answerList.add(answer);
+    answer.setQuestion(this);
+}
+
 }

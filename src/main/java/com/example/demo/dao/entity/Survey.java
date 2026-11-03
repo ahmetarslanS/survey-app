@@ -35,4 +35,9 @@ public class Survey {
 
     @OneToMany(mappedBy = "survey", cascade = CascadeType.ALL, orphanRemoval = true)
     private List<SurveyParticipant> participantList = new ArrayList<>();
+    public void addQuestion(Question question) {
+        questionList.add(question);
+        question.setSurvey(this);
+    }
+    
 }
