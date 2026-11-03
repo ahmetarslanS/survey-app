@@ -3,8 +3,9 @@ package com.example.demo.controllers.admin;
 import com.example.demo.dao.entity.Survey;
 import com.example.demo.dto.AdminSurveyListResponse;
 import com.example.demo.dto.CreateSurveyRequest;
-import com.example.demo.dto.SurveyStatusResponse;
-import com.example.demo.dto.UpdateSurveyStatusRequest;
+import com.example.demo.dto.SurveyReportResponse;
+import com.example.demo.dto.SurveyUpdateResponse;
+import com.example.demo.dto.UpdateSurveyRequest;
 import com.example.demo.service.SurveyService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
@@ -32,14 +33,21 @@ public class SurveyController {
         return ResponseEntity.ok(surveyService.getAllSurveys());
     }
 
-    @PatchMapping("/{surveyId}/status")
-    public ResponseEntity<SurveyStatusResponse> updateStatus(
+    @PatchMapping("/surveys/{surveyId}")
+    public ResponseEntity<SurveyUpdateResponse> updateSurvey(
             @PathVariable Long surveyId,
-            @RequestBody UpdateSurveyStatusRequest request
+            @RequestBody UpdateSurveyRequest request
     ) {
-        SurveyStatusResponse response =
-                surveyService.updateStatus(surveyId, request);
+        SurveyUpdateResponse response =
+                surveyService.updateSurvey(surveyId, request);
 
         return ResponseEntity.ok(response);
+    }
+
+    @GetMapping("/surveys/{surveyId}/reports")
+    public ResponseEntity<SurveyReportResponse> getSurveyReport(
+            @PathVariable Long surveyId
+    ) {
+        return ResponseEntity.ok(surveyService.getSurveyReport(surveyId));
     }
 }

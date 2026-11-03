@@ -1,15 +1,26 @@
 package com.example.demo.service.impl;
 
 import com.example.demo.dao.entity.*;
+import com.example.demo.dao.projection.CompletionTimeProjection;
+import com.example.demo.dao.projection.FreeTextAnswerProjection;
+import com.example.demo.dao.projection.OptionCountProjection;
+import com.example.demo.dao.projection.ParticipantStatsProjection;
+import com.example.demo.dao.projection.QuestionAnsweredCountProjection;
 import com.example.demo.dao.projection.SurveyListProjection;
+import com.example.demo.dao.repository.QuestionRepository;
+import com.example.demo.dao.repository.SubmissionAnswerRepository;
+import com.example.demo.dao.repository.SurveyParticipantRepository;
 import com.example.demo.dao.repository.SurveyRepository;
 import com.example.demo.dto.AdminSurveyListResponse;
+import com.example.demo.dto.OptionReportResponse;
+import com.example.demo.dto.QuestionReportResponse;
+import com.example.demo.dto.SurveyReportResponse;
 import com.example.demo.dao.entity.Status;
 import com.example.demo.dao.entity.Survey;
 import com.example.demo.dao.repository.SurveyRepository;
 import com.example.demo.dto.CreateSurveyRequest;
-import com.example.demo.dto.SurveyStatusResponse;
-import com.example.demo.dto.UpdateSurveyStatusRequest;
+import com.example.demo.dto.SurveyUpdateResponse;
+import com.example.demo.dto.UpdateSurveyRequest;
 import com.example.demo.exception.InvalidSurveyStatusTransitionException;
 import com.example.demo.exception.SurveyNotFoundException;
 import com.example.demo.service.MailService;
@@ -26,8 +37,14 @@ import org.springframework.util.StringUtils;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
+import java.util.OptionalDouble;
+import java.util.stream.Collectors;
 
 
 @Slf4j
@@ -36,6 +53,9 @@ import java.util.List;
 public class SurveyServiceImpl implements SurveyService {
 
     private final SurveyRepository surveyRepository;
+    private final QuestionRepository questionRepository;
+    private final SurveyParticipantRepository surveyParticipantRepository;
+    private final SubmissionAnswerRepository submissionAnswerRepository;
     private final MailService mailService;
 
     private static final List<String> LIKERT_OPTIONS = List.of(
@@ -82,45 +102,82 @@ public class SurveyServiceImpl implements SurveyService {
 
         return surveyEntity;
     }
-        @Transactional
-    public SurveyStatusResponse updateStatus(
+    @Override
+    @Transactional
+    public SurveyUpdateResponse updateSurvey(
             Long surveyId,
-            UpdateSurveyStatusRequest request
+            UpdateSurveyRequest request
     ) {
-        // 1. Request içinde statü gönderilmiş mi?
-        if (request.status() == null) {
+        if (request == null || (request.status() == null && request.endDate() == null)) {
             throw new IllegalArgumentException(
-                    "Güncellenecek statü boş olamaz."
+                    "Güncellenecek en az bir alan (status, endDate) gönderilmelidir."
             );
         }
 
-        // 2. Anket veritabanından bulunur
         Survey survey = surveyRepository.findById(surveyId)
                 .orElseThrow(() ->
                         new SurveyNotFoundException(surveyId)
                 );
 
-        // 3. Mevcut ve hedef statü alınır
         Status currentStatus = survey.getStatus();
-        Status targetStatus = request.status();
+        Status targetStatus = resolveTargetStatus(currentStatus, request);
 
-        // 4. Statü geçişi uygun mu kontrol edilir
-        validateStatusTransition(currentStatus, targetStatus);
+        // Both fields are validated before any change, so a request is never applied partially.
+        if (targetStatus != currentStatus) {
+            validateStatusTransition(currentStatus, targetStatus);
+        }
+        if (request.endDate() != null) {
+            validateEndDate(currentStatus, targetStatus, request.endDate());
+        }
 
-        // 5. Statü ve güncelleme zamanı değiştirilir
         survey.setStatus(targetStatus);
+        if (request.endDate() != null) {
+            survey.setEndDate(request.endDate());
+        }
         survey.setUpdatedDateTime(LocalDateTime.now());
 
-        // 6. Veritabanına kaydedilir
         Survey updatedSurvey = surveyRepository.save(survey);
 
-        // 7. Güncel bilgiler response olarak döndürülür
-        return new SurveyStatusResponse(
+        return new SurveyUpdateResponse(
                 updatedSurvey.getId(),
                 updatedSurvey.getStatus(),
                 updatedSurvey.getStatus().getDescription(),
+                updatedSurvey.getEndDate(),
                 updatedSurvey.getUpdatedDateTime()
         );
+    }
+
+    private Status resolveTargetStatus(Status currentStatus, UpdateSurveyRequest request) {
+        if (request.status() != null) {
+            return request.status();
+        }
+        // Extending the end date of an outdated survey reopens it.
+        if (request.endDate() != null && currentStatus == Status.OUTDATED) {
+            return Status.LIVE;
+        }
+        return currentStatus;
+    }
+
+    private void validateEndDate(
+            Status currentStatus,
+            Status targetStatus,
+            LocalDateTime endDate
+    ) {
+        if (!endDate.isAfter(LocalDateTime.now())) {
+            throw new IllegalArgumentException(
+                    "Son katılım tarihi ileri bir tarih olmalıdır."
+            );
+        }
+        if (currentStatus == Status.CLOSED) {
+            throw new IllegalArgumentException(
+                    "Kapanmış anketin son katılım tarihi güncellenemez."
+            );
+        }
+        if (targetStatus == Status.CLOSED || targetStatus == Status.OUTDATED) {
+            throw new IllegalArgumentException(
+                    targetStatus.getDescription() + " statüsüne geçilirken son katılım tarihi güncellenemez."
+            );
+        }
     }
 
     private void validateStatusTransition(
@@ -186,12 +243,166 @@ public class SurveyServiceImpl implements SurveyService {
                 .divide(BigDecimal.valueOf(participantCount), 2, RoundingMode.HALF_UP);
     }
 
+    @Override
+    @Transactional
+    public SurveyReportResponse getSurveyReport(Long surveyId) {
+        Survey survey = surveyRepository.findById(surveyId)
+                .orElseThrow(() -> new SurveyNotFoundException(surveyId));
+
+        List<Question> questionList = questionRepository.findAllWithAnswersBySurveyId(surveyId);
+        ParticipantStatsProjection participantStats =
+                surveyParticipantRepository.findParticipantStatsBySurveyId(surveyId);
+        List<CompletionTimeProjection> completionTimeList =
+                surveyParticipantRepository.findCompletionTimesBySurveyId(surveyId);
+
+        // Answer counts are loaded once for the whole survey and matched to the questions by id.
+        Map<Long, Long> selectedCountMap = submissionAnswerRepository.countSelectedOptionsBySurveyId(surveyId)
+                .stream()
+                .collect(Collectors.toMap(OptionCountProjection::getAnswerId, OptionCountProjection::getSelectedCount));
+        Map<Long, Long> answeredCountMap = submissionAnswerRepository.countAnsweredQuestionsBySurveyId(surveyId)
+                .stream()
+                .collect(Collectors.toMap(QuestionAnsweredCountProjection::getQuestionId,
+                        QuestionAnsweredCountProjection::getAnsweredCount));
+        Map<Long, List<String>> freeTextAnswerMap = submissionAnswerRepository.findFreeTextAnswersBySurveyId(surveyId)
+                .stream()
+                .collect(Collectors.groupingBy(FreeTextAnswerProjection::getQuestionId,
+                        Collectors.mapping(FreeTextAnswerProjection::getText, Collectors.toList())));
+
+        long participantCount = participantStats != null && participantStats.getParticipantCount() != null
+                ? participantStats.getParticipantCount() : 0;
+        long responseCount = participantStats != null && participantStats.getResponseCount() != null
+                ? participantStats.getResponseCount() : 0;
+
+        SurveyReportResponse report = new SurveyReportResponse();
+        report.setSurveyId(survey.getId());
+        report.setTitle(survey.getTitle());
+        report.setDescription(survey.getDescription());
+        report.setStatus(survey.getStatus());
+        report.setStatusDescription(survey.getStatus() != null ? survey.getStatus().getDescription() : null);
+        report.setEndDate(survey.getEndDate());
+        report.setIsAnonymous(survey.getIsAnonymous());
+        report.setParticipantCount(participantCount);
+        report.setResponseCount(responseCount);
+        report.setParticipationRate(calculateResponseRate(responseCount, participantCount));
+        setAverageCompletionTime(report, completionTimeList);
+
+        List<OptionReportResponse> allLikertOptionList = new ArrayList<>();
+        for (Question question : questionList) {
+            QuestionReportResponse questionReport = toQuestionReport(
+                    question, responseCount, answeredCountMap, selectedCountMap, freeTextAnswerMap);
+            report.getQuestionReports().add(questionReport);
+
+            if (question.getType() == QuestionType.LIKERT) {
+                allLikertOptionList.addAll(questionReport.getOptions());
+            }
+        }
+        // Weighted average of all LIKERT answers, not the average of the question averages.
+        report.setSatisfactionAverage(calculateLikertAverage(allLikertOptionList));
+
+        return report;
+    }
+
+    private QuestionReportResponse toQuestionReport(
+            Question question,
+            long responseCount,
+            Map<Long, Long> answeredCountMap,
+            Map<Long, Long> selectedCountMap,
+            Map<Long, List<String>> freeTextAnswerMap
+    ) {
+        long answeredCount = answeredCountMap.getOrDefault(question.getId(), 0L);
+
+        QuestionReportResponse questionReport = new QuestionReportResponse();
+        questionReport.setQuestionId(question.getId());
+        questionReport.setQuestionText(question.getQuestionText());
+        questionReport.setQuestionOrder(question.getQuestionOrder());
+        questionReport.setType(question.getType());
+        questionReport.setIsOptional(question.getIsOptional());
+        questionReport.setAnsweredCount(answeredCount);
+        questionReport.setAnsweredRate(calculateResponseRate(answeredCount, responseCount));
+
+        if (question.getType() == QuestionType.FREETEXT) {
+            questionReport.setFreeTextAnswers(
+                    new ArrayList<>(freeTextAnswerMap.getOrDefault(question.getId(), List.of())));
+            return questionReport;
+        }
+
+        // Options that were never selected are also returned with a count of 0.
+        question.getAnswerList().stream()
+                .sorted(Comparator.comparing(Answer::getAnswerOrder))
+                .forEach(answer -> {
+                    long selectedCount = selectedCountMap.getOrDefault(answer.getId(), 0L);
+                    questionReport.getOptions().add(new OptionReportResponse(
+                            answer.getId(),
+                            answer.getAnswerOrder(),
+                            answer.getText(),
+                            selectedCount,
+                            calculateResponseRate(selectedCount, answeredCount)
+                    ));
+                });
+
+        if (question.getType() == QuestionType.LIKERT) {
+            questionReport.setAverageScore(calculateLikertAverage(questionReport.getOptions()));
+        }
+
+        return questionReport;
+    }
+
+    // answerOrder of a LIKERT option is its score (1-5).
+    private BigDecimal calculateLikertAverage(List<OptionReportResponse> likertOptionList) {
+        long totalScore = 0;
+        long totalSelectedCount = 0;
+        for (OptionReportResponse option : likertOptionList) {
+            totalScore += (long) option.getAnswerOrder() * option.getSelectedCount();
+            totalSelectedCount += option.getSelectedCount();
+        }
+
+        if (totalSelectedCount == 0) {
+            return null;
+        }
+        return BigDecimal.valueOf(totalScore)
+                .divide(BigDecimal.valueOf(totalSelectedCount), 2, RoundingMode.HALF_UP);
+    }
+
+    private void setAverageCompletionTime(SurveyReportResponse report, List<CompletionTimeProjection> completionTimeList) {
+        OptionalDouble averageSeconds = completionTimeList.stream()
+                .mapToLong(completionTime -> Duration.between(
+                        completionTime.getStartedDateTime(), completionTime.getRespondedDateTime()).getSeconds())
+                // Inconsistent records (responded before started) are excluded.
+                .filter(seconds -> seconds >= 0)
+                .average();
+
+        if (averageSeconds.isEmpty()) {
+            return;
+        }
+        long roundedSeconds = Math.round(averageSeconds.getAsDouble());
+        report.setAverageCompletionTimeSeconds(roundedSeconds);
+        report.setAverageCompletionTimeText(formatDuration(roundedSeconds));
+    }
+
+    // e.g. 45 -> "45 sn", 270 -> "4 dk 30 sn", 3720 -> "1 sa 2 dk"
+    private String formatDuration(long totalSeconds) {
+        long hours = totalSeconds / 3600;
+        long minutes = (totalSeconds % 3600) / 60;
+        long seconds = totalSeconds % 60;
+
+        List<String> parts = new ArrayList<>();
+        if (hours > 0) {
+            parts.add(hours + " sa");
+        }
+        if (minutes > 0) {
+            parts.add(minutes + " dk");
+        }
+        if (seconds > 0 || parts.isEmpty()) {
+            parts.add(seconds + " sn");
+        }
+        return String.join(" ", parts);
+    }
+
     private void addParticipants(Survey surveyEntity, List<String> participantMails) {
         if (CollectionUtils.isEmpty(participantMails)) {
             return;
         }
 
-        // Same mail can be sent more than once in the request, each participant is saved once.
         participantMails.stream()
                 .filter(StringUtils::hasText)
                 .map(mail -> mail.trim().toLowerCase())

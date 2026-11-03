@@ -4,10 +4,11 @@ import com.example.demo.dao.entity.Status;
 
 import java.time.LocalDateTime;
 
-public record SurveyStatusResponse(
+public record SurveyUpdateResponse(
         Long surveyId,
         Status status,
         String statusDescription,
+        LocalDateTime endDate,
         LocalDateTime updatedDateTime
 ) {
 }

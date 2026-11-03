@@ -27,5 +27,7 @@ public class SurveyParticipant {
 
     private String email;
     private Boolean isResponded;
+    // Set when the participant opens the survey, used to calculate the completion time.
+    private LocalDateTime startedDateTime;
     private LocalDateTime respondedDateTime;
 }
