@@ -21,7 +21,9 @@ public class Survey {
     private String description;
     private LocalDateTime endDate;
     private Boolean isAnonymous;
-    private Status status;
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, length = 20)
+    private Status status = Status.DRAFT;
     private LocalDateTime createdDateTime;
     private LocalDateTime updatedDateTime;
 }
