@@ -7,26 +7,36 @@ info:
 servers:
   - url: http://api.surveytool.com/v1
     description: Production server
-  - url: http://staging-api.surveytool.com
+  - url: http://staging-api.surveytool.com/v1
     description: Staging server
 
+security:
+  - bearerAuth: []
+
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: "Token returned from the login endpoints, sent as `Authorization: Bearer <token>`."
+    surveyToken:
+      type: apiKey
+      in: header
+      name: X-Survey-Token
+      description: One-time token delivered to the participant for submitting a survey response.
+
   schemas:
     LoginRequest:
       type: object
+      required: [email, password]
       properties:
-        user:
-          type: object
-          properties:
-            email:
-              type: string
-            name:
-              type: string
-            password:
-              type: string
-            role:
-              type: string
-              enum: [ADMIN, REGULAR]
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          format: password
     LoginResponse:
       type: object
       properties:
@@ -34,8 +44,81 @@ components:
           type: string
         sso:
           type: string
-    SurveyRequest:
+
+    QuestionType:
+      type: string
+      enum: [LIKERT, MULTIPLE_CHOICE, SINGLE_CHOICE, FREE_TEXT]
+    SurveyStatus:
+      type: string
+      enum: [DRAFT, ACTIVE, CLOSED, EXPIRED]
+
+    Answer:
       type: object
+      required: [answerOrder]
+      properties:
+        answerOrder:
+          type: integer
+          description: Display order of the answer within the question. For LIKERT questions it is also the scale value (e.g. 1-5).
+        answerText:
+          type: string
+          description: Answer text. For FREE_TEXT questions it holds the participant's input.
+        isSelected:
+          type: boolean
+          description: Whether this answer was selected by the participant. Ignored when defining templates/surveys.
+    Question:
+      type: object
+      required: [questionText, questionType, questionOrder]
+      properties:
+        questionText:
+          type: string
+        questionType:
+          $ref: '#/components/schemas/QuestionType'
+        questionOrder:
+          type: integer
+          description: Display order of the question within its section.
+        isMandatory:
+          type: boolean
+        answers:
+          type: array
+          items:
+            $ref: '#/components/schemas/Answer'
+    QuestionDetail:
+      allOf:
+        - type: object
+          properties:
+            questionId:
+              type: string
+              readOnly: true
+        - $ref: '#/components/schemas/Question'
+    Section:
+      type: object
+      properties:
+        sectionTitle:
+          type: string
+        questions:
+          type: array
+          items:
+            $ref: '#/components/schemas/Question'
+    SectionDetail:
+      type: object
+      properties:
+        sectionTitle:
+          type: string
+        questions:
+          type: array
+          items:
+            $ref: '#/components/schemas/QuestionDetail'
+    Participant:
+      type: object
+      required: [email]
+      properties:
+        email:
+          type: string
+          format: email
+
+    TemplateRequest:
+      type: object
+      required: [title, sections]
       properties:
         title:
           type: string
@@ -44,62 +127,133 @@ components:
         sections:
           type: array
           items:
-            type: object
-            properties:
-              sectionTitle:
-                type: string
-              questions:
-                type: array
-                items:
-                  type: object
-                  properties:
-                    questionText:
-                      type: string
-                    questionType:
-                      type: string
-                      enum: [LIKERT, MULTIPLE_CHOICE, SINGLE_CHOICE, FREE_TEXT]
-                    isMandatory:
-                      type: boolean
-                    answer:
-                      type: object
-                      additionalProperties: true
-        endDate:
+            $ref: '#/components/schemas/Section'
+    TemplateResponse:
+      type: object
+      properties:
+        templateId:
           type: string
-          format: date-time
-        participants:
+        title:
+          type: string
+        description:
+          type: string
+        sections:
           type: array
           items:
-            type: object
-            properties:
-              email:
-                type: string
-        isAnonymous:
-          type: boolean
-        isEditable:
-          type: boolean
-        surveyStatus:
-          type: string
-          enum: [CLOSED, ACTIVE, DRAFT, EXPIRED]
+            $ref: '#/components/schemas/SectionDetail'
         createdDate:
           type: string
           format: date-time
         updatedDate:
           type: string
           format: date-time
+
+    CreateSurveyRequest:
+      type: object
+      description: >
+        Creates a survey and sends it to the given participants in a single step.
+        If `templateId` is provided, the questions are copied from the template; otherwise `sections` must be given.
+      required: [title, endDate, participants]
+      properties:
+        templateId:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+        sections:
+          type: array
+          items:
+            $ref: '#/components/schemas/Section'
+        endDate:
+          type: string
+          format: date-time
+        participants:
+          type: array
+          items:
+            $ref: '#/components/schemas/Participant'
+        isAnonymous:
+          type: boolean
+        isEditable:
+          type: boolean
     SurveyResponse:
       type: object
       properties:
-        sentParticipantsCount:
-          type: integer
-        deadline:
+        surveyId:
+          type: string
+        templateId:
+          type: string
+          nullable: true
+        title:
+          type: string
+        description:
+          type: string
+        sections:
+          type: array
+          items:
+            $ref: '#/components/schemas/SectionDetail'
+        endDate:
           type: string
           format: date-time
+        isAnonymous:
+          type: boolean
+        isEditable:
+          type: boolean
+        surveyStatus:
+          $ref: '#/components/schemas/SurveyStatus'
+        sentParticipantsCount:
+          type: integer
+        createdDate:
+          type: string
+          format: date-time
+        updatedDate:
+          type: string
+          format: date-time
+    UpdateSurveyStatusRequest:
+      type: object
+      required: [surveyId, surveyStatus]
+      properties:
+        surveyId:
+          type: string
+        surveyStatus:
+          $ref: '#/components/schemas/SurveyStatus'
+
+    SubmitSurveyRequest:
+      type: object
+      required: [answers]
+      properties:
+        answers:
+          type: array
+          items:
+            type: object
+            required: [questionId, answers]
+            properties:
+              questionId:
+                type: string
+              answers:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Answer'
+
+    QuestionAverageResponse:
+      type: object
+      properties:
+        questionId:
+          type: string
+        average:
+          type: number
+          format: double
+          example: 4.3
+        responseCount:
+          type: integer
 
 paths:
-  /auth/login:
+  /admin/auth/login:
     post:
-      summary: Login as admin or user
-      description: Authenticate and retrieve a token for further actions.
+      tags: [Admin]
+      summary: Login as admin
+      description: Authenticate an admin and retrieve a token for further actions.
+      security: []
       requestBody:
         required: true
         content:
@@ -113,49 +267,136 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/LoginResponse'
+        "401":
+          description: Invalid credentials
 
-  /surveys:
+  /user/auth/login:
     post:
-      summary: Create a new survey
-      description: Create a new survey with detailed properties, optionally saving it as a template.
+      tags: [User]
+      summary: Login as user
+      description: Authenticate a user and retrieve a token for further actions.
+      security: []
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/SurveyRequest'
-      responses:
-        "201":
-          description: Survey created successfully
-
-  /surveys/{surveyId}/send:
-    post:
-      summary: Send a survey
-      description: Distribute a survey to users with participant objects containing email addresses.
-      parameters:
-        - name: surveyId
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/SurveyRequest'
+              $ref: '#/components/schemas/LoginRequest'
       responses:
         "200":
-          description: Survey sent successfully
+          description: Successful login
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        "401":
+          description: Invalid credentials
+
+  /admin/templates:
+    post:
+      tags: [Admin]
+      summary: Create a survey template
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TemplateRequest'
+      responses:
+        "201":
+          description: Template created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TemplateResponse'
+    get:
+      tags: [Admin]
+      summary: List survey templates
+      responses:
+        "200":
+          description: Templates retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TemplateResponse'
+
+  /admin/surveys:
+    post:
+      tags: [Admin]
+      summary: Create and send a survey
+      description: Create a new survey (optionally from a template) and distribute it to the participants.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSurveyRequest'
+      responses:
+        "201":
+          description: Survey created and sent successfully
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/SurveyResponse'
+    get:
+      tags: [Admin]
+      summary: Get surveys
+      description: Retrieve all surveys created by admins.
+      responses:
+        "200":
+          description: Surveys retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SurveyResponse'
 
-  /surveys/{surveyId}/responses:
+  /admin/surveys/status:
+    patch:
+      tags: [Admin]
+      summary: Update survey status
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateSurveyStatusRequest'
+      responses:
+        "200":
+          description: Survey status updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SurveyResponse'
+        "404":
+          description: Survey not found
+
+  /user/surveys:
+    get:
+      tags: [User]
+      summary: Get surveys
+      description: Retrieve the surveys assigned to the authenticated user.
+      responses:
+        "200":
+          description: Surveys retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SurveyResponse'
+
+  /user/surveys/{surveyId}/responses:
     post:
+      tags: [User]
       summary: Submit a survey response
-      description: Submit answers to a survey using a one-time token.
+      description: Submit answers to a survey. The one-time token is sent in the `X-Survey-Token` header.
+      security:
+        - bearerAuth: []
+          surveyToken: []
       parameters:
         - name: surveyId
           in: path
@@ -167,27 +408,39 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              properties:
-                token:
-                  type: string
-                answers:
-                  type: array
-                  items:
-                    type: object
-                    properties:
-                      questionId:
-                        type: string
-                      answer:
-                        type: string
+              $ref: '#/components/schemas/SubmitSurveyRequest'
       responses:
         "200":
           description: Response submitted successfully
         "400":
           description: Invalid or expired token
 
-  /surveys/{surveyId}/reports:
+  /admin/questions/{questionId}/average:
     get:
+      tags: [Admin]
+      summary: Get average answer of a question
+      description: Calculate the average answer value of a LIKERT question (e.g. 4.3 on a 1-5 scale).
+      parameters:
+        - name: questionId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Average calculated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QuestionAverageResponse'
+        "400":
+          description: Question is not a LIKERT question
+        "404":
+          description: Question not found
+
+  /admin/surveys/{surveyId}/reports:
+    get:
+      tags: [Admin]
       summary: Get survey reports
       description: Retrieve reports for a specific survey, including response distribution and additional metrics.
       parameters:
@@ -238,8 +491,9 @@ paths:
                   isAnonymous:
                     type: boolean
 
-  /surveys/{surveyId}/export/csv:
+  /admin/surveys/{surveyId}/export/csv:
     get:
+      tags: [Admin]
       summary: Export survey results as CSV
       description: Retrieve survey results in CSV format for download.
       parameters:
@@ -257,8 +511,9 @@ paths:
                 type: string
                 format: binary
 
-  /surveys/{surveyId}/export/pdf:
+  /admin/surveys/{surveyId}/export/pdf:
     get:
+      tags: [Admin]
       summary: Export survey results as PDF
       description: Retrieve survey results in PDF format for download.
       parameters:
