@@ -13,6 +13,7 @@ import com.example.demo.exception.SurveyNotFoundException;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.time.LocalDateTime;
 
@@ -20,6 +21,8 @@ import java.util.List;
 
 public interface SurveyService {
     Survey createSurvey(CreateSurveyRequest request);
+
+    Survey createSurvey(CreateSurveyRequest request, MultipartFile participantFile);
 
     List<AdminSurveyListResponse> getAllSurveys();
     SurveyUpdateResponse updateSurvey(Long surveyId, UpdateSurveyRequest request);

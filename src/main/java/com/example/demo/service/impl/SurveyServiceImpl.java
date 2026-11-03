@@ -25,6 +25,8 @@ import com.example.demo.exception.InvalidSurveyStatusTransitionException;
 import com.example.demo.exception.SurveyNotFoundException;
 import com.example.demo.service.MailService;
 import com.example.demo.service.SurveyService;
+import com.example.demo.util.ParticipantCsvParser;
+import org.springframework.web.multipart.MultipartFile;
 import jakarta.transaction.Transactional;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -41,9 +43,11 @@ import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.OptionalDouble;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 
@@ -57,6 +61,7 @@ public class SurveyServiceImpl implements SurveyService {
     private final SurveyParticipantRepository surveyParticipantRepository;
     private final SubmissionAnswerRepository submissionAnswerRepository;
     private final MailService mailService;
+    private final ParticipantCsvParser participantCsvParser;
 
     private static final List<String> LIKERT_OPTIONS = List.of(
             "Kesinlikle Katılmıyorum",
@@ -102,6 +107,32 @@ public class SurveyServiceImpl implements SurveyService {
 
         return surveyEntity;
     }
+
+    @Override
+    @Transactional
+    public Survey createSurvey(CreateSurveyRequest request, MultipartFile participantFile) {
+        if (request == null) {
+            throw new IllegalArgumentException("Anket bilgileri (request) boş olamaz.");
+        }
+
+        if (participantFile != null && !participantFile.isEmpty()) {
+            List<String> fileMails = participantCsvParser.parse(participantFile);
+
+            // Mails from the request and the file are merged, so the invitation mail is sent once per address.
+            Set<String> mergedMails = new LinkedHashSet<>();
+            if (request.getParticipantMails() != null) {
+                request.getParticipantMails().stream()
+                        .filter(StringUtils::hasText)
+                        .map(mail -> mail.trim().toLowerCase())
+                        .forEach(mergedMails::add);
+            }
+            mergedMails.addAll(fileMails);
+            request.setParticipantMails(new ArrayList<>(mergedMails));
+        }
+
+        return createSurvey(request);
+    }
+
     @Override
     @Transactional
     public SurveyUpdateResponse updateSurvey(
