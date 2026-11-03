@@ -1,0 +1,277 @@
+openapi: 3.0.4
+info:
+  title: Survey Tool API
+  description: API for managing surveys, including creation, distribution, response collection, and reporting.
+  version: 0.0.0
+
+servers:
+  - url: http://api.surveytool.com/v1
+    description: Production server
+  - url: http://staging-api.surveytool.com
+    description: Staging server
+
+components:
+  schemas:
+    LoginRequest:
+      type: object
+      properties:
+        user:
+          type: object
+          properties:
+            email:
+              type: string
+            name:
+              type: string
+            password:
+              type: string
+            role:
+              type: string
+              enum: [ADMIN, REGULAR]
+    LoginResponse:
+      type: object
+      properties:
+        token:
+          type: string
+        sso:
+          type: string
+    SurveyRequest:
+      type: object
+      properties:
+        title:
+          type: string
+        description:
+          type: string
+        sections:
+          type: array
+          items:
+            type: object
+            properties:
+              sectionTitle:
+                type: string
+              questions:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    questionText:
+                      type: string
+                    questionType:
+                      type: string
+                      enum: [LIKERT, MULTIPLE_CHOICE, SINGLE_CHOICE, FREE_TEXT]
+                    isMandatory:
+                      type: boolean
+                    answer:
+                      type: object
+                      additionalProperties: true
+        endDate:
+          type: string
+          format: date-time
+        participants:
+          type: array
+          items:
+            type: object
+            properties:
+              email:
+                type: string
+        isAnonymous:
+          type: boolean
+        isEditable:
+          type: boolean
+        surveyStatus:
+          type: string
+          enum: [CLOSED, ACTIVE, DRAFT, EXPIRED]
+        createdDate:
+          type: string
+          format: date-time
+        updatedDate:
+          type: string
+          format: date-time
+    SurveyResponse:
+      type: object
+      properties:
+        sentParticipantsCount:
+          type: integer
+        deadline:
+          type: string
+          format: date-time
+
+paths:
+  /auth/login:
+    post:
+      summary: Login as admin or user
+      description: Authenticate and retrieve a token for further actions.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        "200":
+          description: Successful login
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+
+  /surveys:
+    post:
+      summary: Create a new survey
+      description: Create a new survey with detailed properties, optionally saving it as a template.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SurveyRequest'
+      responses:
+        "201":
+          description: Survey created successfully
+
+  /surveys/{surveyId}/send:
+    post:
+      summary: Send a survey
+      description: Distribute a survey to users with participant objects containing email addresses.
+      parameters:
+        - name: surveyId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SurveyRequest'
+      responses:
+        "200":
+          description: Survey sent successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SurveyResponse'
+
+  /surveys/{surveyId}/responses:
+    post:
+      summary: Submit a survey response
+      description: Submit answers to a survey using a one-time token.
+      parameters:
+        - name: surveyId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                token:
+                  type: string
+                answers:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      questionId:
+                        type: string
+                      answer:
+                        type: string
+      responses:
+        "200":
+          description: Response submitted successfully
+        "400":
+          description: Invalid or expired token
+
+  /surveys/{surveyId}/reports:
+    get:
+      summary: Get survey reports
+      description: Retrieve reports for a specific survey, including response distribution and additional metrics.
+      parameters:
+        - name: surveyId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Survey report retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  satisfactionAverage:
+                    type: number
+                    format: float
+                    minimum: 0
+                    maximum: 5
+                  participationRate:
+                    type: number
+                    format: float
+                    description: Participation rate as a percentage.
+                  approvedParticipants:
+                    type: integer
+                  invitedParticipants:
+                    type: integer
+                  averageCompletionTime:
+                    type: string
+                    format: duration
+                  questionReports:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        questionText:
+                          type: string
+                        responseDistribution:
+                          type: object
+                          additionalProperties:
+                            type: integer
+                  trainingContent:
+                    type: string
+                  trainerAndOrganization:
+                    type: string
+                  isAnonymous:
+                    type: boolean
+
+  /surveys/{surveyId}/export/csv:
+    get:
+      summary: Export survey results as CSV
+      description: Retrieve survey results in CSV format for download.
+      parameters:
+        - name: surveyId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: CSV file generated successfully
+          content:
+            text/csv:
+              schema:
+                type: string
+                format: binary
+
+  /surveys/{surveyId}/export/pdf:
+    get:
+      summary: Export survey results as PDF
+      description: Retrieve survey results in PDF format for download.
+      parameters:
+        - name: surveyId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: PDF file generated successfully
+          content:
+            application/pdf:
+              schema:
+                type: string
+                format: binary
