@@ -2,6 +2,7 @@ package com.example.demo.service;
 
 import com.example.demo.dao.entity.Status;
 import com.example.demo.dao.entity.Survey;
+import com.example.demo.dto.AdminSurveyListResponse;
 import com.example.demo.dao.repository.SurveyRepository;
 import com.example.demo.dto.CreateSurveyRequest;
 import com.example.demo.dto.SurveyStatusResponse;
@@ -14,8 +15,11 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 
-public interface SurveyService {
+import java.util.List;
 
+public interface SurveyService {
     Survey createSurvey(CreateSurveyRequest request);
+
+    List<AdminSurveyListResponse> getAllSurveys();
     SurveyStatusResponse updateStatus(Long surveyId, UpdateSurveyStatusRequest request);
 }
