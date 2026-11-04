@@ -26,6 +26,7 @@ import com.example.demo.exception.SurveyNotFoundException;
 import com.example.demo.service.MailService;
 import com.example.demo.service.SurveyService;
 import com.example.demo.util.ParticipantCsvParser;
+import com.example.demo.util.SurveyReportCsvWriter;
 import org.springframework.web.multipart.MultipartFile;
 import jakarta.transaction.Transactional;
 import lombok.RequiredArgsConstructor;
@@ -62,6 +63,7 @@ public class SurveyServiceImpl implements SurveyService {
     private final SubmissionAnswerRepository submissionAnswerRepository;
     private final MailService mailService;
     private final ParticipantCsvParser participantCsvParser;
+    private final SurveyReportCsvWriter surveyReportCsvWriter;
 
     private static final List<String> LIKERT_OPTIONS = List.of(
             "Kesinlikle Katılmıyorum",
@@ -331,6 +333,12 @@ public class SurveyServiceImpl implements SurveyService {
         report.setSatisfactionAverage(calculateLikertAverage(allLikertOptionList));
 
         return report;
+    }
+
+    @Override
+    @Transactional
+    public byte[] exportSurveyReportAsCsv(Long surveyId) {
+        return surveyReportCsvWriter.write(getSurveyReport(surveyId));
     }
 
     private QuestionReportResponse toQuestionReport(

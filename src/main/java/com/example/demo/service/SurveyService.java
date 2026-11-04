@@ -28,4 +28,6 @@ public interface SurveyService {
     SurveyUpdateResponse updateSurvey(Long surveyId, UpdateSurveyRequest request);
 
     SurveyReportResponse getSurveyReport(Long surveyId);
+
+    byte[] exportSurveyReportAsCsv(Long surveyId);
 }

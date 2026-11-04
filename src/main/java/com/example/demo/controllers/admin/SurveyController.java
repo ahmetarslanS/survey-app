@@ -8,11 +8,16 @@ import com.example.demo.dto.SurveyUpdateResponse;
 import com.example.demo.dto.UpdateSurveyRequest;
 import com.example.demo.service.SurveyService;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.ContentDisposition;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.nio.charset.StandardCharsets;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.List;
 
 @RestController
@@ -61,5 +66,28 @@ public class SurveyController {
             @PathVariable Long surveyId
     ) {
         return ResponseEntity.ok(surveyService.getSurveyReport(surveyId));
+    }
+
+    @GetMapping("/surveys/{surveyId}/export/csv")
+    public ResponseEntity<byte[]> exportSurveyReportAsCsv(
+            @PathVariable Long surveyId
+    ) {
+        byte[] content = surveyService.exportSurveyReportAsCsv(surveyId);
+
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.attachment()
+                        .filename(buildReportFileName(surveyId, "csv"))
+                        .build()
+                        .toString())
+                .contentType(new MediaType("text", "csv", StandardCharsets.UTF_8))
+                .contentLength(content.length)
+                .body(content);
+    }
+
+    // e.g. anket-raporu-1-20261103-1530.csv
+    private String buildReportFileName(Long surveyId, String extension) {
+        return "anket-raporu-" + surveyId + "-"
+                + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmm"))
+                + "." + extension;
     }
 }
