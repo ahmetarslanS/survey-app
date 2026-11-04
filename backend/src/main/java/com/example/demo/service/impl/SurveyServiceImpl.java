@@ -27,6 +27,8 @@ import com.example.demo.service.MailService;
 import com.example.demo.service.SurveyService;
 import com.example.demo.util.ParticipantCsvParser;
 import com.example.demo.util.SurveyReportCsvWriter;
+import com.example.demo.config.InvitationProperties;
+import com.example.demo.security.InvitationTokenService;
 import org.springframework.web.multipart.MultipartFile;
 import jakarta.transaction.Transactional;
 import lombok.RequiredArgsConstructor;
@@ -44,6 +46,7 @@ import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -62,6 +65,8 @@ public class SurveyServiceImpl implements SurveyService {
     private final SurveyParticipantRepository surveyParticipantRepository;
     private final SubmissionAnswerRepository submissionAnswerRepository;
     private final MailService mailService;
+    private final InvitationTokenService invitationTokenService;
+    private final InvitationProperties invitationProperties;
     private final ParticipantCsvParser participantCsvParser;
     private final SurveyReportCsvWriter surveyReportCsvWriter;
 
@@ -79,6 +84,7 @@ public class SurveyServiceImpl implements SurveyService {
     @Transactional
     public Survey createSurvey(CreateSurveyRequest request) {
         Survey survey = new Survey();
+        Map<SurveyParticipant, String> invitationTokens = Map.of();
         if (request != null) {
             survey.setTitle(request.getTitle());
             survey.setDescription(request.getDescription());
@@ -95,19 +101,37 @@ public class SurveyServiceImpl implements SurveyService {
                 }
             }
 
-            addParticipants(survey, request.getParticipantMails());
+            invitationTokens = addParticipants(survey, request.getParticipantMails());
         }
         Survey surveyEntity = surveyRepository.save(survey);
         surveyRepository.flush();
 
-        try {
-            mailService.sendSimpleMail(request.getParticipantMails(), surveyEntity.getTitle(),
-                    surveyEntity.getDescription(), surveyEntity);
-        } catch (Exception e) {
-            log.debug("Mail gönderme işlemi esnasında bir hata oluştu. :( ", e);
-        }
+        sendInvitations(surveyEntity, invitationTokens);
 
         return surveyEntity;
+    }
+
+    /**
+     * Her katılımcıya kişiye özel linki gönderir. Bir alıcıdaki hata diğerlerini etkilemez;
+     * başarılı gönderim SENT, başarısız gönderim FAILED olarak işaretlenir (§3.3).
+     */
+    private void sendInvitations(Survey survey, Map<SurveyParticipant, String> invitationTokens) {
+        int sent = 0;
+        for (Map.Entry<SurveyParticipant, String> entry : invitationTokens.entrySet()) {
+            SurveyParticipant participant = entry.getKey();
+            String link = invitationProperties.buildSurveyLink(survey.getId(), entry.getValue());
+            try {
+                mailService.sendInvitation(survey, participant.getEmail(), link);
+                participant.setInvitationStatus(InvitationStatus.SENT);
+                participant.setSentDateTime(LocalDateTime.now());
+                sent++;
+            } catch (Exception e) {
+                participant.setInvitationStatus(InvitationStatus.FAILED);
+                log.warn("Davet maili gönderilemedi (surveyId={}, participantId={})",
+                        survey.getId(), participant.getId(), e);
+            }
+        }
+        log.info("Davet gönderimi tamamlandı (surveyId={}): {}/{} başarılı.", survey.getId(), sent, invitationTokens.size());
     }
 
     @Override
@@ -437,9 +461,14 @@ public class SurveyServiceImpl implements SurveyService {
         return String.join(" ", parts);
     }
 
-    private void addParticipants(Survey surveyEntity, List<String> participantMails) {
+    /**
+     * Katılımcıları ekler ve her birine davet tokenı üretir. DB'ye yalnızca token hash'i yazılır;
+     * ham tokenlar mail gönderimi için yalnızca bu istek boyunca bellekte tutulur.
+     */
+    private Map<SurveyParticipant, String> addParticipants(Survey surveyEntity, List<String> participantMails) {
+        Map<SurveyParticipant, String> invitationTokens = new LinkedHashMap<>();
         if (CollectionUtils.isEmpty(participantMails)) {
-            return;
+            return invitationTokens;
         }
 
         participantMails.stream()
@@ -447,12 +476,17 @@ public class SurveyServiceImpl implements SurveyService {
                 .map(mail -> mail.trim().toLowerCase())
                 .distinct()
                 .forEach(mail -> {
+                    String token = invitationTokenService.generate();
                     SurveyParticipant participantEntity = new SurveyParticipant();
                     participantEntity.setSurvey(surveyEntity);
                     participantEntity.setEmail(mail);
                     participantEntity.setIsResponded(false);
+                    participantEntity.setTokenHash(invitationTokenService.hash(token));
+                    participantEntity.setInvitationStatus(InvitationStatus.CREATED);
                     surveyEntity.getParticipantList().add(participantEntity);
+                    invitationTokens.put(participantEntity, token);
                 });
+        return invitationTokens;
     }
 
     private void addQuestions(Survey surveyEntity, Question questionRequest, int defaultOrder) {

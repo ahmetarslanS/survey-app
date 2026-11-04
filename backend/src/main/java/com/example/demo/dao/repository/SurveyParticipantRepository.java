@@ -3,12 +3,15 @@ package com.example.demo.dao.repository;
 import com.example.demo.dao.entity.SurveyParticipant;
 import com.example.demo.dao.projection.CompletionTimeProjection;
 import com.example.demo.dao.projection.ParticipantStatsProjection;
+import jakarta.persistence.LockModeType;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 import java.util.List;
+import java.util.Optional;
 
 @Repository
 public interface SurveyParticipantRepository extends JpaRepository<SurveyParticipant, Long> {
@@ -20,6 +23,14 @@ public interface SurveyParticipantRepository extends JpaRepository<SurveyPartici
             where p.survey.id = :surveyId
             """)
     ParticipantStatsProjection findParticipantStatsBySurveyId(@Param("surveyId") Long surveyId);
+
+    @Query("select p from SurveyParticipant p join fetch p.survey where p.tokenHash = :tokenHash")
+    Optional<SurveyParticipant> findByTokenHash(@Param("tokenHash") String tokenHash);
+
+    // Ara kayıt ve gönderim aynı anda iki kez işlenmesin diye satır kilitlenir (çift gönderim, BR-01).
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select p from SurveyParticipant p join fetch p.survey where p.tokenHash = :tokenHash")
+    Optional<SurveyParticipant> findByTokenHashForUpdate(@Param("tokenHash") String tokenHash);
 
     // Only participants with both dates are returned, the others are excluded from the average.
     @Query("""

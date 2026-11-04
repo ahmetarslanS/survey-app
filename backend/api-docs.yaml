@@ -73,6 +73,13 @@ components:
         path:
           type: string
           example: /admin/surveys/1
+        code:
+          type: string
+          nullable: true
+          description: >
+            Machine-readable code where the client must distinguish errors, otherwise null.
+            INVITATION_INVALID (404), SURVEY_EXPIRED (410), ALREADY_ANSWERED (409), RATE_LIMITED (429).
+          example: SURVEY_EXPIRED
 
     Answer:
       type: object
@@ -305,22 +312,88 @@ components:
           type: string
           format: date-time
 
+    ParticipantSurveyResponse:
+      type: object
+      properties:
+        surveyId:
+          type: integer
+          format: int64
+        title:
+          type: string
+        description:
+          type: string
+        endDate:
+          type: string
+          format: date-time
+        isAnonymous:
+          type: boolean
+        questions:
+          type: array
+          items:
+            type: object
+            properties:
+              questionId:
+                type: integer
+                format: int64
+              questionText:
+                type: string
+              type:
+                $ref: '#/components/schemas/QuestionType'
+              questionOrder:
+                type: integer
+              isMandatory:
+                type: boolean
+              options:
+                type: array
+                description: Empty for FREETEXT. LIKERT options are the fixed 1-5 scale.
+                items:
+                  type: object
+                  properties:
+                    answerId:
+                      type: integer
+                      format: int64
+                    answerOrder:
+                      type: integer
+                    text:
+                      type: string
+        draftAnswers:
+          type: object
+          nullable: true
+          additionalProperties: true
+          description: The draft saved with PUT /user/surveys/{surveyId}/draft, returned as is. Null if none.
+
     SubmitSurveyRequest:
       type: object
       required: [answers]
+      description: Optional questions that were not answered can be omitted. Mandatory questions must be answered.
       properties:
         answers:
           type: array
           items:
             type: object
-            required: [questionId, answers]
+            required: [questionId]
             properties:
               questionId:
-                type: string
-              answers:
+                type: integer
+                format: int64
+              optionIds:
                 type: array
+                description: answerId values. Exactly one for LIKERT and SINGLE_CHOICE, one or more for MULTIPLE_CHOICE.
                 items:
-                  $ref: '#/components/schemas/Answer'
+                  type: integer
+                  format: int64
+              text:
+                type: string
+                maxLength: 2000
+                description: Only for FREETEXT questions.
+      example:
+        answers:
+          - questionId: 1
+            optionIds: [4]
+          - questionId: 3
+            optionIds: [11, 12]
+          - questionId: 4
+            text: Çok faydalıydı
 
     OptionReportResponse:
       type: object
@@ -464,27 +537,30 @@ paths:
         "401":
           description: Invalid credentials
 
-  /user/auth/login:
+  /admin/auth/refresh:
     post:
-      tags: [User]
-      summary: Login as user
-      description: Authenticate a user and retrieve a token for further actions.
-      security: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/LoginRequest'
+      tags: [Admin]
+      summary: Refresh the access token
+      description: Returns a new token for the owner of a valid token. Used to keep an active session alive.
       responses:
         "200":
-          description: Successful login
+          description: New token
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/LoginResponse'
         "401":
-          description: Invalid credentials
+          description: Token missing, invalid or expired
+
+  /admin/auth/me:
+    get:
+      tags: [Admin]
+      summary: Current admin user
+      responses:
+        "200":
+          description: The user that owns the token
+        "401":
+          description: Token missing, invalid or expired
 
   /admin/templates:
     post:
@@ -630,35 +706,91 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
-  /user/surveys:
+  # Participant endpoints. Participants have no account: the invitation token from the mail link
+  # ({frontend}/survey/{surveyId}?token=...) is sent in the X-Survey-Token header.
+  # Rate limited per IP (app.invitation.rate-limit-per-minute) -> 429 RATE_LIMITED.
+  /user/surveys/{surveyId}:
     get:
       tags: [User]
-      summary: Get surveys
-      description: Retrieve the surveys assigned to the authenticated user.
-      responses:
-        "200":
-          description: Surveys retrieved successfully
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/SurveyResponse'
-
-  /user/surveys/{surveyId}/responses:
-    post:
-      tags: [User]
-      summary: Submit a survey response
-      description: Submit answers to a survey. The one-time token is sent in the `X-Survey-Token` header.
+      summary: Open a survey with an invitation token
+      description: First access marks the invitation as STARTED. Returns the saved draft if there is one.
       security:
-        - bearerAuth: []
-          surveyToken: []
+        - surveyToken: []
       parameters:
         - name: surveyId
           in: path
           required: true
           schema:
-            type: string
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: Survey to answer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ParticipantSurveyResponse'
+        "404":
+          description: INVITATION_INVALID - token missing, unknown, belongs to another survey or invitation cancelled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "409":
+          description: ALREADY_ANSWERED - the token was consumed by a final submission
+        "410":
+          description: SURVEY_EXPIRED - end date passed or survey closed
+
+  /user/surveys/{surveyId}/draft:
+    put:
+      tags: [User]
+      summary: Save a draft (resume later)
+      description: Any JSON object (max 64 KB). It is returned as draftAnswers on the next GET and deleted on final submission.
+      security:
+        - surveyToken: []
+      parameters:
+        - name: surveyId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+            example: { "12": 4, "13": [1, 3] }
+      responses:
+        "204":
+          description: Draft saved
+        "400":
+          description: Body is not a JSON object or too large
+        "404":
+          description: INVITATION_INVALID
+        "409":
+          description: ALREADY_ANSWERED
+        "410":
+          description: SURVEY_EXPIRED
+
+  /user/surveys/{surveyId}/responses:
+    post:
+      tags: [User]
+      summary: Submit a survey response
+      description: >
+        Final submission. The token is consumed here (not on first access), so the same link can be reopened
+        until submission. In anonymous surveys the response is not linked to the participant.
+      security:
+        - surveyToken: []
+      parameters:
+        - name: surveyId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
       requestBody:
         required: true
         content:
@@ -666,10 +798,20 @@ paths:
             schema:
               $ref: '#/components/schemas/SubmitSurveyRequest'
       responses:
-        "200":
-          description: Response submitted successfully
+        "204":
+          description: Response submitted
         "400":
-          description: Invalid or expired token
+          description: Mandatory question missing, unknown question/option or invalid answer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: INVITATION_INVALID
+        "409":
+          description: ALREADY_ANSWERED
+        "410":
+          description: SURVEY_EXPIRED
 
   /admin/questions/{questionId}/average:
     get:

@@ -1,51 +1,90 @@
 package com.example.demo.service.impl;
 
+import com.example.demo.config.MailDeliveryProperties;
 import com.example.demo.dao.entity.Survey;
 import com.example.demo.service.MailService;
 import jakarta.mail.MessagingException;
 import jakarta.mail.internet.MimeMessage;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.jspecify.annotations.Nullable;
+import org.springframework.mail.MailException;
+import org.springframework.mail.javamail.JavaMailSender;
 import org.springframework.mail.javamail.MimeMessageHelper;
 import org.springframework.stereotype.Service;
-import org.springframework.mail.javamail.JavaMailSender;
-import org.springframework.util.CollectionUtils;
+import org.springframework.web.util.HtmlUtils;
 
-import java.util.List;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.Objects;
+import java.util.UUID;
 
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class MailServiceImpl implements MailService {
-    private final JavaMailSender mailSender;
 
+    private static final DateTimeFormatter OUTBOX_FILE_TIME = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss");
+
+    private final JavaMailSender mailSender;
+    private final MailDeliveryProperties properties;
+
+    /**
+     * Kişiye özel davet maili. Her katılımcının linki farklı olduğu için alıcılar tek tek gönderilir
+     * (önceki toplu gönderimde alıcılar birbirinin adresini de görüyordu).
+     * Hata durumunda app.mail.max-attempts kez denenir (NFR-42); yine olmazsa exception fırlatılır.
+     * Loglara e-posta adresi ve link (token) yazılmaz (NFR-43).
+     */
     @Override
-    public void sendSimpleMail(List<String> toList, String subject, String text, Survey survey) {
-        if (CollectionUtils.isEmpty(toList)) {
-            log.warn("Mail recipient list is empty, mail not sent. surveyId: {}", survey.getId());
+    public void sendInvitation(Survey survey, String recipient, String surveyLink) {
+        String subject = "Anket Daveti: " + Objects.toString(survey.getTitle(), "");
+        String html = buildMailContent(survey, surveyLink);
+
+        if (!properties.enabled()) {
+            writeToOutbox(survey, recipient, subject, html);
             return;
         }
 
-        try {
-            MimeMessage message = mailSender.createMimeMessage();
-            MimeMessageHelper helper = new MimeMessageHelper(message, true, "UTF-8");
-
-            helper.setTo(toList.toArray(String[]::new));
-            helper.setSubject(subject);
-            helper.setText(buildMailContent(text, survey), true);
-
-            mailSender.send(message);
-            log.info("HTML mail sent to: {}", toList);
-        } catch (MessagingException e) {
-            log.error("Failed to send HTML mail to: {}", toList, e);
-            throw new RuntimeException("Mail gönderilemedi", e);
+        int attempts = Math.max(1, properties.maxAttempts());
+        RuntimeException lastError = null;
+        for (int attempt = 1; attempt <= attempts; attempt++) {
+            try {
+                MimeMessage message = mailSender.createMimeMessage();
+                MimeMessageHelper helper = new MimeMessageHelper(message, true, "UTF-8");
+                helper.setTo(recipient);
+                helper.setSubject(subject);
+                helper.setText(html, true);
+                mailSender.send(message);
+                return;
+            } catch (MessagingException | MailException e) {
+                lastError = new IllegalStateException("Mail gönderilemedi", e);
+                log.warn("Davet maili gönderilemedi (surveyId={}, deneme {}/{}): {}",
+                        survey.getId(), attempt, attempts, e.getMessage());
+            }
         }
-
+        throw lastError;
     }
 
-    private @Nullable String buildMailContent(String text, Survey survey) {
+    /** Geliştirme modu: mail gönderilmez, outbox klasörüne yazılır. */
+    private void writeToOutbox(Survey survey, String recipient, String subject, String html) {
+        try {
+            Path dir = Path.of(properties.outboxDir());
+            Files.createDirectories(dir);
+            String fileName = "survey-" + survey.getId() + "-" + LocalDateTime.now().format(OUTBOX_FILE_TIME)
+                    + "-" + UUID.randomUUID().toString().substring(0, 8) + ".html";
+            String content = "<!-- To: " + HtmlUtils.htmlEscape(recipient) + " | Subject: "
+                    + HtmlUtils.htmlEscape(subject) + " -->\n" + html;
+            Files.writeString(dir.resolve(fileName), content, StandardCharsets.UTF_8);
+            log.info("app.mail.enabled=false: davet maili outbox'a yazıldı ({}).", dir.resolve(fileName));
+        } catch (IOException e) {
+            throw new IllegalStateException("Mail outbox'a yazılamadı", e);
+        }
+    }
+
+    private String buildMailContent(Survey survey, String surveyLink) {
 
         String mailContent = "<!DOCTYPE html>\n"
                 + "<html lang=\"tr\">\n"
@@ -199,10 +238,10 @@ public class MailServiceImpl implements MailService {
                 + "</body>\n"
                 + "</html>";
 
-        return mailContent.replace("{{SURVEY_TITLE}}", Objects.toString(survey.getTitle(), ""))
-                .replace("{{SURVEY_DESCRIPTION}}", Objects.toString(survey.getDescription(), ""))
-                .replace("{{SURVEY_LINK}}",
-                        "http://localhost:8080/user/api/v1/surveys/detail/" + survey.getId());
+        // Başlık/açıklama admin girdisidir; HTML enjeksiyonuna karşı kaçış karakterleriyle yazılır.
+        return mailContent.replace("{{SURVEY_TITLE}}", HtmlUtils.htmlEscape(Objects.toString(survey.getTitle(), "")))
+                .replace("{{SURVEY_DESCRIPTION}}", HtmlUtils.htmlEscape(Objects.toString(survey.getDescription(), "")))
+                .replace("{{SURVEY_LINK}}", HtmlUtils.htmlEscape(surveyLink));
 
     }
 }

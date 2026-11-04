@@ -35,3 +35,6 @@ out/
 
 ### VS Code ###
 .vscode/
+
+### Yerel sırlar ###
+application-local.properties

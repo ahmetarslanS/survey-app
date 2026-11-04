@@ -29,7 +29,9 @@ public class SurveySubmission {
 
     // A participant can submit a survey only once.
     @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "participant_id", nullable = false)
+    // BR-06: Anonim ankette yanıt kaydı katılımcıya bağlanmaz (null). Tekrar gönderim, katılımcının
+    // COMPLETED durumu ile engellenir; kayıtlı modda bu unique kısıt da ikinci bir güvencedir.
+    @JoinColumn(name = "participant_id")
     @ToString.Exclude
     @EqualsAndHashCode.Exclude
     private SurveyParticipant participant;

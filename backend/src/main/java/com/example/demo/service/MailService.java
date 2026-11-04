@@ -2,9 +2,8 @@ package com.example.demo.service;
 
 import com.example.demo.dao.entity.Survey;
 
-import java.util.List;
-
 public interface MailService {
 
-    void sendSimpleMail(List<String> toList, String subject, String text, Survey survey);
+    /** Katılımcıya kişiye özel davet linkini içeren maili gönderir. */
+    void sendInvitation(Survey survey, String recipient, String surveyLink);
 }

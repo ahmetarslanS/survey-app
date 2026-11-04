@@ -30,4 +30,22 @@ public class SurveyParticipant {
     // Set when the participant opens the survey, used to calculate the completion time.
     private LocalDateTime startedDateTime;
     private LocalDateTime respondedDateTime;
+
+    // Davet tokenının SHA-256 özeti (NFR-02). Ham token yalnızca davet mailinde bulunur, hiçbir yerde saklanmaz.
+    @Column(length = 64, unique = true)
+    private String tokenHash;
+
+    @Enumerated(EnumType.STRING)
+    private InvitationStatus invitationStatus = InvitationStatus.CREATED;
+
+    private LocalDateTime sentDateTime;
+
+    private LocalDateTime lastAccessDateTime;
+
+    // Ara kayıt (FR-63): istemcinin gönderdiği yanıt taslağı (JSON nesnesi). Nihai gönderimde silinir.
+    @Column(columnDefinition = "text")
+    @ToString.Exclude
+    private String draftAnswers;
+
+    private LocalDateTime draftSavedDateTime;
 }
