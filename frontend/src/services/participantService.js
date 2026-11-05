@@ -17,24 +17,31 @@ function withReason(error) {
 
 const tokenHeader = (token) => ({ 'X-Survey-Token': token })
 
-/** GET /user/surveys/{id} cevabı -> formun kullandığı ortak model (bölüm tutulmadığı için tek bölüm) */
+/** GET /user/surveys/{id} cevabı -> formun kullandığı ortak model. Ardışık aynı sectionTitle'lı sorular bir bölümdür. */
 function normalizeSurvey(raw) {
-  const questions = [...(raw.questions ?? [])]
-    .sort((a, b) => (a.questionOrder ?? 0) - (b.questionOrder ?? 0))
-    .map((q) => ({
+  const sections = []
+  for (const q of [...(raw.questions ?? [])].sort((a, b) => (a.questionOrder ?? 0) - (b.questionOrder ?? 0))) {
+    const title = q.sectionTitle ?? null
+    let section = sections.at(-1)
+    if (!section || section.title !== title) {
+      section = { id: `s${sections.length}`, title, questions: [] }
+      sections.push(section)
+    }
+    section.questions.push({
       id: String(q.questionId),
       text: q.questionText,
       type: q.type,
       mandatory: Boolean(q.isMandatory),
       options: (q.options ?? []).map((o) => ({ id: o.answerId, order: o.answerOrder, text: o.text })),
-    }))
+    })
+  }
   return {
     id: String(raw.surveyId),
     title: raw.title,
     description: raw.description,
     endDate: raw.endDate,
     isAnonymous: Boolean(raw.isAnonymous),
-    sections: [{ id: 'main', title: null, questions }],
+    sections,
     draftAnswers: raw.draftAnswers && typeof raw.draftAnswers === 'object' ? raw.draftAnswers : null,
   }
 }

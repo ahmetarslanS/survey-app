@@ -79,7 +79,14 @@ Paket kökü: `backend/src/main/java/com/example/demo/`
 - **Enumlar:** `Status` DRAFT/LIVE/CLOSED/OUTDATED, `QuestionType` LIKERT/SINGLE_CHOICE/MULTIPLE_CHOICE/FREETEXT.
   İkisi de `description` alanında Türkçe etiket taşır.
 - **Entity'ler:** Survey, Question, Answer, SurveyParticipant, SurveySubmission, SubmissionAnswer, SurveyTemplate,
-  TemplateQuestion, TemplateAnswer. **Bölüm (section) kavramı backend'de yok**: sorular düz liste halinde tutulur.
+  TemplateQuestion, TemplateAnswer, User. **Ayrı Section tablosu yok**: sorular düz liste, bölüm adı `Question.sectionTitle`;
+  bölümler ardışık aynı `sectionTitle`'lı sorulardan kurulur (sıra `questionOrder`).
+- **Liste sayaçları:** `Survey.participantCount` / `responseCount` Anketlerim listesi için önceden hesaplanır.
+  `participantCount` `applyContent`'te set edilir; `responseCount` yalnızca `SurveyRepository.incrementResponseCount`
+  (native atomik UPDATE) ile artar, entity'de `updatable=false`. Katılımcı/yanıt ekleyen yeni bir akış yazarsan sayaçları da
+  güncelle. Rapor endpointi sayıları canlı hesaplar.
+- **Anket akışı:** taslak kaydet (DRAFT, token/mail yok) → düzenle → `/send` (LIVE + tokenlar + mail). Yayındaki ankette
+  soru yapısı değişmez (BR-04); yalnızca bitiş tarihi/durum `PATCH` ile.
 - **API sözleşmesi:** `backend/api-docs.yaml` (OpenAPI). Dokümandaki bazı endpointler henüz yazılmadı, durumları TASKS.md'de.
 - Kayıt DTO'ları `record`, diğerleri Lombok `@Data`. Tarihler `LocalDateTime` (saat dilimi Europe/Istanbul varsayılır).
 
@@ -93,9 +100,14 @@ Paket kökü: `backend/src/main/java/com/example/demo/`
 | GET | `/user/surveys/{id}` | Katılımcı, `X-Survey-Token`. `ParticipantSurveyResponse` (+ `draftAnswers`) |
 | PUT | `/user/surveys/{id}/draft` | Katılımcı ara kayıt (JSON nesnesi) → 204 |
 | POST | `/user/surveys/{id}/responses` | Katılımcı gönderim `{ answers: [{ questionId, optionIds \| text }] }` → 204 |
-| POST | `/admin/surveys` | JSON veya multipart (`request` + `participantFile` CSV). Anketi **LIVE** oluşturur, mail atar, id döner |
-| GET | `/admin/surveys` | `AdminSurveyListResponse[]` |
-| PATCH | `/admin/surveys/{id}` | `{ status?, endDate? }` |
+| POST | `/admin/surveys` | JSON veya multipart (`request` + `participantFile` CSV). Anketi doğrudan **LIVE** oluşturur, mail atar (frontend kullanmıyor) |
+| POST | `/admin/surveys/drafts` | `CreateSurveyRequest` → **DRAFT** kaydeder, mail yok, 201 + id. Yalnızca başlık zorunlu |
+| PUT | `/admin/surveys/{id}/draft` | Taslağın tüm içeriğini (sorular, katılımcılar) baştan yazar. Yalnızca DRAFT |
+| GET | `/admin/surveys/{id}` | `SurveyDetailResponse` (sorular `sectionTitle` ile, katılımcı mailleri) |
+| POST | `/admin/surveys/{id}/send` | DRAFT → LIVE, tokenlar + davet mailleri → `SendSurveyResponse` (sent/failed sayıları) |
+| DELETE | `/admin/surveys/{id}` | Yalnızca DRAFT |
+| GET | `/admin/surveys` | `AdminSurveyListResponse[]` (taslaklar dahil) |
+| PATCH | `/admin/surveys/{id}` | `{ status?, endDate? }` — DRAFT için reddedilir (gönderim `/send` ile) |
 | GET | `/admin/surveys/{id}/reports` | `SurveyReportResponse` |
 | GET | `/admin/surveys/{id}/export/csv` | UTF-8 CSV |
 | POST | `/admin/templates/from-survey/{surveyId}` | `{ name, description }` |
@@ -123,8 +135,9 @@ Paket kökü: `backend/src/main/java/com/example/demo/`
 
 ### Rotalar
 
-`/login` · `/surveys` · `/surveys/new` · `/surveys/:surveyId/report` · `/templates` · `/reports` · `/dashboard`,
-`/participants`, `/help` (yer tutucu) · `/survey-preview` (admin önizleme) · katılımcı: `/survey/:surveyId?token=...`,
+`/login` · `/surveys` · `/surveys/new` · `/surveys/:surveyId/edit` · `/surveys/:surveyId/report` · `/templates` · `/reports` · `/dashboard`,
+`/participants`, `/help` (yer tutucu) · `/survey-preview` (builder önizlemesi; oturum istemez, yalnızca localStorage'daki
+taslağı gösterir) · katılımcı: `/survey/:surveyId?token=...`,
 `/thanks`, `/access-error?reason=expired|answered|invalid`
 
 ### Frontend ↔ backend uyarlamaları
@@ -134,8 +147,11 @@ Paket kökü: `backend/src/main/java/com/example/demo/`
 - PDF rapor önyüzde üretilir (backend'de PDF yok): `lib/pdf/SurveyReportDocument.jsx` (react-pdf dokümanı, Inter TTF
   `@expo-google-fonts/inter`'den gömülü — standart PDF fontları ğ/ş/ı/İ içermez) + `exportSurveyReportPdf.jsx`
   (react-pdf'i dinamik import ile yükler). CSV ise backend'den (`/export/csv`).
-- Builder'daki "Taslağı Kaydet" localStorage'a yazar. Backend'de taslak oluşturma yok, "Gönder" doğrudan LIVE anket oluşturur.
-- Builder'daki bölümler gönderirken sorulara düzleştirilir.
+- Builder (`SurveyBuilderPage`): `/surveys/new` (yeni / `?template=`), `/surveys/{id}/edit` (kayıtlı taslak). "Taslağı Kaydet"
+  → `drafts` / `PUT draft`; "Gönder" → önce kaydet, sonra `/send`. Router builder'ı `surveyId ?? 'new'` ile anahtarlar
+  (rota değişince state sıfırlanır). Önizleme yeni sekmede (`savePreview` localStorage).
+- Taslak ↔ istek dönüşümleri `lib/surveyDraft.js`: `toCreateRequest`, `detailToDraft`, `templateToDraft`, `validateForSave`,
+  `validateForSend`.
 - Listedeki "Düzenle" yalnızca bitiş tarihini günceller (PATCH). Soru düzenleme endpointi yok.
 - Katılımcı CSV'si istemcide ayrıştırılır, JSON `participantMails` olarak gönderilir.
 - Katılımcı formu (`SurveyFormPage` + `participantService`) backend'e bağlı. Yanıtlar formda `{ [questionId]: seçenek order'ı |

@@ -1,10 +1,12 @@
 import { CHOICE_TYPES, LIKERT_LABELS } from './constants'
-import { isFutureDateTime, toLocalDateTime } from './format'
+import { isFutureDateTime, splitLocalDateTime, toLocalDateTime } from './format'
 
-const DRAFT_KEY = 'survey-tool.builder-draft'
+// Önizleme yeni sekmede açılır; sekmeler arası paylaşım için localStorage kullanılır
 const PREVIEW_KEY = 'survey-tool.preview'
 
 export const newId = () => crypto.randomUUID()
+
+const DEFAULT_SECTION_TITLE = 'Genel'
 
 export function createEmptyDraft() {
   return {
@@ -15,9 +17,11 @@ export function createEmptyDraft() {
     anonymous: true,
     participants: [],
     // FR-21: varsayılan bölüm otomatik oluşturulur
-    sections: [{ id: newId(), title: 'Genel', questions: [] }],
+    sections: [{ id: newId(), title: DEFAULT_SECTION_TITLE, questions: [] }],
   }
 }
+
+const sortByOrder = (key) => (a, b) => (a[key] ?? 0) - (b[key] ?? 0)
 
 /**
  * GET /admin/templates/{id} cevabını builder taslağına çevirir (FR-12): başlık, açıklama ve sorular kopyalanır,
@@ -28,53 +32,84 @@ export function templateToDraft(template) {
   draft.title = template.name ?? ''
   draft.description = template.description ?? ''
   draft.anonymous = template.isAnonymous ?? true
-  draft.sections[0].questions = [...(template.questionList ?? [])]
-    .sort((a, b) => (a.questionOrder ?? 0) - (b.questionOrder ?? 0))
-    .map((q) => ({
+  draft.sections[0].questions = [...(template.questionList ?? [])].sort(sortByOrder('questionOrder')).map((q) => ({
+    id: newId(),
+    text: q.questionText ?? '',
+    type: q.type,
+    mandatory: !q.isOptional,
+    options: CHOICE_TYPES.includes(q.type) ? [...(q.answerList ?? [])].sort(sortByOrder('answerOrder')).map((a) => a.text) : [],
+  }))
+  return draft
+}
+
+/**
+ * GET /admin/surveys/{id} cevabını (SurveyDetailResponse) builder taslağına çevirir.
+ * Bölümler, soruların sectionTitle alanından sıraları korunarak yeniden kurulur.
+ */
+export function detailToDraft(detail) {
+  const { date, time } = splitLocalDateTime(detail.endDate)
+  const sections = []
+  for (const q of [...(detail.questions ?? [])].sort(sortByOrder('questionOrder'))) {
+    const title = q.sectionTitle || DEFAULT_SECTION_TITLE
+    let section = sections.at(-1)
+    if (!section || section.title !== title) {
+      section = { id: newId(), title, questions: [] }
+      sections.push(section)
+    }
+    section.questions.push({
       id: newId(),
       text: q.questionText ?? '',
       type: q.type,
       mandatory: !q.isOptional,
-      options: CHOICE_TYPES.includes(q.type)
-        ? [...(q.answerList ?? [])].sort((a, b) => (a.answerOrder ?? 0) - (b.answerOrder ?? 0)).map((a) => a.text)
-        : [],
-    }))
-  return draft
-}
-
-export const loadDraft = () => {
-  try {
-    return JSON.parse(localStorage.getItem(DRAFT_KEY)) ?? null
-  } catch {
-    return null
+      options: CHOICE_TYPES.includes(q.type) ? [...(q.options ?? [])].sort(sortByOrder('answerOrder')).map((o) => o.text) : [],
+    })
+  }
+  return {
+    title: detail.title ?? '',
+    description: detail.description ?? '',
+    endDate: date,
+    endTime: time || '18:00',
+    anonymous: detail.isAnonymous ?? true,
+    participants: detail.participantMails ?? [],
+    sections: sections.length ? sections : createEmptyDraft().sections,
   }
 }
-export const saveDraft = (draft) => localStorage.setItem(DRAFT_KEY, JSON.stringify(draft))
-export const clearDraft = () => localStorage.removeItem(DRAFT_KEY)
 
 export const allQuestions = (draft) => draft.sections.flatMap((s) => s.questions)
 
-/** Taslağı backend'in CreateSurveyRequest gövdesine çevirir. Backend bölüm tutmadığı için sorular sıralı düzleştirilir. */
+/**
+ * Taslağı backend'in CreateSurveyRequest gövdesine çevirir. Sorular sıralı düzleştirilir; bölüm bilgisi
+ * her sorunun sectionTitle alanında taşınır. Taslakta bitiş tarihi boş olabilir.
+ */
 export function toCreateRequest(draft) {
   return {
     title: draft.title.trim(),
     description: draft.description.trim(),
-    endDate: toLocalDateTime(draft.endDate, draft.endTime),
+    endDate: draft.endDate ? toLocalDateTime(draft.endDate, draft.endTime || '00:00') : null,
     isAnonymous: draft.anonymous,
     participantMails: draft.participants,
-    questionList: allQuestions(draft).map((q, i) => ({
-      questionText: q.text.trim(),
-      type: q.type,
-      questionOrder: i + 1,
-      isOptional: !q.mandatory,
-      ...(CHOICE_TYPES.includes(q.type)
-        ? { answerList: q.options.map((text, k) => ({ answerOrder: k + 1, text: text.trim() })) }
-        : {}),
-    })),
+    questionList: draft.sections.flatMap((section) => section.questions.map((q) => ({ q, sectionTitle: section.title }))).map(
+      ({ q, sectionTitle }, i) => ({
+        questionText: q.text.trim(),
+        type: q.type,
+        questionOrder: i + 1,
+        isOptional: !q.mandatory,
+        sectionTitle: sectionTitle?.trim() || null,
+        ...(CHOICE_TYPES.includes(q.type)
+          ? { answerList: q.options.map((text, k) => ({ answerOrder: k + 1, text: text.trim() })) }
+          : {}),
+      }),
+    ),
   }
 }
 
-export function validateDraft(draft) {
+/** Taslak olarak kaydetmek için yalnızca başlık gerekir (listede görünmesi için). */
+export function validateForSave(draft) {
+  return draft.title.trim() ? [] : ['Taslağı kaydetmek için anket başlığı girin.']
+}
+
+/** Göndermek için anket eksiksiz olmalı (FR-20, FR-22, FR-40). */
+export function validateForSend(draft) {
   const errors = []
   if (!draft.title.trim()) errors.push('Anket başlığı zorunludur.')
   if (!draft.endDate) errors.push('Bitiş tarihi zorunludur.')
@@ -90,7 +125,7 @@ export function toFormSurvey(draft) {
     id: 'preview',
     title: draft.title || 'Başlıksız anket',
     description: draft.description,
-    endDate: toLocalDateTime(draft.endDate || '', draft.endTime),
+    endDate: draft.endDate ? toLocalDateTime(draft.endDate, draft.endTime) : null,
     isAnonymous: draft.anonymous,
     sections: draft.sections
       .filter((s) => s.questions.length)
@@ -111,10 +146,10 @@ export function toFormSurvey(draft) {
   }
 }
 
-export const savePreview = (draft) => sessionStorage.setItem(PREVIEW_KEY, JSON.stringify(toFormSurvey(draft)))
+export const savePreview = (draft) => localStorage.setItem(PREVIEW_KEY, JSON.stringify(toFormSurvey(draft)))
 export const loadPreview = () => {
   try {
-    return JSON.parse(sessionStorage.getItem(PREVIEW_KEY))
+    return JSON.parse(localStorage.getItem(PREVIEW_KEY))
   } catch {
     return null
   }

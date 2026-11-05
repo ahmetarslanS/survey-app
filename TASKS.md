@@ -48,13 +48,17 @@ T-30..T-37 tamamlandı (bkz. Tamamlananlar). Kalan ilgili işler:
 - [ ] **T-18 CORS / prod yapılandırması** (S · NFR-01): dev'de Vite proxy yeterli, prod için CORS veya reverse proxy.
 - [ ] **T-10 Yayındaki ankete katılımcı ekleme** (M · FR-43): yalnızca yeni eklenenlere davet gider.
 - [ ] **T-11 Hatırlatma maili** (S · FR-44): yanıt vermeyenlere manuel / bitişten X gün önce otomatik.
-- [ ] **T-12 Anket detay + taslak anket** (M · FR-20..27, FR-11): DRAFT oluşturma, anket detayını getirme ve güncelleme
-  (builder'da "Düzenle" için gerekli), yayın sonrası yapı kilidi (BR-04, BR-05).
-- [ ] **T-13 Bölüm (section) desteği** (M · FR-21): veri modelinde Section yok. Frontend bölümleri düzleştirerek gönderiyor.
+- [ ] **T-12b Yayındaki ankette yazım düzeltmesi** (S · BR-04, Q-06): yayındaki ankette yalnızca soru metni düzeltmesine
+  izin veren ekran/endpoint. Şu an yayındaki anketin yalnızca bitiş tarihi ve durumu değiştirilebiliyor.
+- [ ] **T-13b Section varlığı** (C · §7): bölümler şu an `Question.sectionTitle` ile tutuluyor (yeterli). Bölüm açıklaması
+  gibi ek alanlar gerekirse ayrı `Section` tablosu. Şablonlar (`TemplateQuestion`) bölüm adını henüz saklamıyor.
+- [ ] **T-44 Taslak servis birim testleri**: `createDraft/updateDraft/sendSurvey/deleteDraft` için birim testi yok
+  (uçtan uca HTTP testiyle doğrulandı).
 - [ ] **T-14 Anket kopyalama / arşivleme / silme** (M · FR-11, BR-08).
 - [ ] **T-15 Katılımcı bazında davet durumu ekranı** (S · FR-45): `SurveyParticipant.invitationStatus` hazır;
   admin için listeleme endpointi + ekran gerekli (anonim modda yalnızca tamamlanma durumu, Q-03).
-- [ ] **T-17 `ddl-auto=create` → `update` veya migration (Flyway)**: şu an her başlatmada veri siliniyor.
+- [ ] **T-17 `ddl-auto=create` → `update` veya migration (Flyway)**: şu an her başlatmada veri siliniyor. Migration'a
+  geçilirken mevcut veride `survey.participant_count` / `response_count` sayaçları `survey_participant`'tan doldurulmalı.
 
 ### Frontend
 
@@ -128,5 +132,30 @@ T-30..T-37 tamamlandı (bkz. Tamamlananlar). Kalan ilgili işler:
   (Türkçe karakterler); KPI'lar, soru bazlı çubuklar, Likert ortalaması, serbest metinler, sayfa numarası.
   Seçimli soru kartları sayfa arasında bölünmüyor, uzun serbest metin listeleri sayfalara yayılıyor.
   react-pdf (~445 KB gzip) yalnızca butona basıldığında yükleniyor. Dosya adı CSV ile aynı biçimde
+- [x] **T-12** Taslaklar backend'de: `POST /admin/surveys/drafts`, `PUT /admin/surveys/{id}/draft`,
+  `GET /admin/surveys/{id}`, `POST /admin/surveys/{id}/send` (gönderim özeti döner), `DELETE /admin/surveys/{id}`
+  (yalnızca DRAFT). Taslak bitiş tarihi/katılımcı olmadan kaydedilebilir; gönderimde eksiksizlik kontrol edilir.
+  `PATCH` ile DRAFT → LIVE engellendi (token/mail üretilmeden yayına alınmasın)
+- [x] **T-13** Bölümler `Question.sectionTitle` ile saklanıyor; builder ve katılımcı formu bölümleri geri kuruyor
+- [x] Builder: "Taslağı Kaydet" backend'e kaydeder (Anketlerim'de "Taslak" görünür), "Gönder" önce kaydedip sonra gönderir
+  (gönderim başarısızsa taslak kalır). `/surveys/{id}/edit` ile taslak açılır. localStorage taslağı kaldırıldı.
+  Anket Ayarları paneli `lg` ve üstünde sticky; Taslağı Kaydet / Gönder panelin altında alt alta. Önizleme yeni sekmede
+  açılıyor (kaydedilmemiş değişiklikler kaybolmuyor). Anketlerim'de taslak satırında "Düzenle" ve "Taslağı sil"
+- [x] Anket oluşturma ve "Bitiş tarihini güncelle" ekranlarında saat alanının sağa taşması düzeltildi (grid hücrelerine
+  `minmax(0, …)`, tarayıcı zaten ikon gösterdiği için ek ikonlar kaldırıldı)
 - [x] Sırlar `application.properties`'ten çıkarıldı: DB/mail şifresi, JWT secret ve ilk admin şifresi artık
   `backend/application-local.properties` (git dışı) veya ortam değişkenlerinden okunuyor; JWT secret yeniden üretildi
+
+### 2026-11-05
+
+- [x] Anketlerim listesi (`GET /admin/surveys`) performansı: katılımcı/yanıt sayıları artık her çağrıda `survey_participant`
+  join + GROUP BY ile hesaplanmıyor. `Survey.participantCount` (taslak kaydı/gönderimde set edilir) ve
+  `Survey.responseCount` (yanıt gönderiminde atomik `UPDATE ... + 1`, entity'de `updatable=false`) sayaçları tutuluyor;
+  liste yalnızca `survey` tablosunu okuyor. Rapor ekranı canlı sayımla devam ediyor. Uçtan uca doğrulandı (tekrar gönderim,
+  PATCH sonrası, eşzamanlı 2 yanıt).
+- [x] Builder düzeni: Anket Ayarları paneli sayfanın en üstünden başlayıp menü gibi ekrana sabit (sticky, kompakt, normal
+  yüksekliklerde kaymıyor); sayfa başlığı sol sütunda. Doğrulama/gönderim hataları panelde butonların üstünde, ilgili alanlar
+  (başlık, bitiş tarihi, katılımcılar) kırmızı. Panel 340px: tarih alanı takvim ikonuyla sığıyor, saat alanıyla çakışmıyor
+- [x] Önizle her zaman yeni sekmede (sabit pencere adı, tekrar basınca aynı sekme güncellenir); soru yoksa önizlemede
+  bilgi mesajı. `/survey-preview` oturum gerektirmiyor (sessionStorage yeni sekmeye taşınmadığında login'e düşüyordu)
+- Ekranlar Edge (Playwright, headless) ile 1366×657'de ekran görüntüsüyle doğrulandı

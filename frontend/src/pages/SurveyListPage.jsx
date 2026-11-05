@@ -1,6 +1,7 @@
 import {
   ArrowUpDown,
   BarChart3,
+  CalendarClock,
   CalendarDays,
   ChevronLeft,
   ChevronRight,
@@ -11,6 +12,7 @@ import {
   Pencil,
   Plus,
   Search,
+  Trash2,
 } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
@@ -244,12 +246,16 @@ export default function SurveyListPage() {
                           disabled={isDraft}
                           onClick={() => navigate(`/surveys/${s.id}/report`)}
                         />
-                        <IconButton
-                          icon={Pencil}
-                          label="Bitiş tarihini güncelle"
-                          disabled={isClosed}
-                          onClick={() => setDialog({ type: 'update', survey: s })}
-                        />
+                        {isDraft ? (
+                          <IconButton icon={Pencil} label="Düzenle" onClick={() => navigate(`/surveys/${s.id}/edit`)} />
+                        ) : (
+                          <IconButton
+                            icon={CalendarClock}
+                            label="Bitiş tarihini güncelle"
+                            disabled={isClosed}
+                            onClick={() => setDialog({ type: 'update', survey: s })}
+                          />
+                        )}
                         <DropdownMenu>
                           <DropdownMenuTrigger asChild>
                             <Button variant="ghost" size="icon" aria-label="Diğer işlemler">
@@ -266,14 +272,21 @@ export default function SurveyListPage() {
                               Sonuçları CSV indir
                             </DropdownMenuItem>
                             <DropdownMenuSeparator />
-                            <DropdownMenuItem
-                              destructive
-                              disabled={isClosed}
-                              onSelect={() => setDialog({ type: 'close', survey: s })}
-                            >
-                              <Lock />
-                              Anketi kapat
-                            </DropdownMenuItem>
+                            {isDraft ? (
+                              <DropdownMenuItem destructive onSelect={() => setDialog({ type: 'delete', survey: s })}>
+                                <Trash2 />
+                                Taslağı sil
+                              </DropdownMenuItem>
+                            ) : (
+                              <DropdownMenuItem
+                                destructive
+                                disabled={isClosed}
+                                onSelect={() => setDialog({ type: 'close', survey: s })}
+                              >
+                                <Lock />
+                                Anketi kapat
+                              </DropdownMenuItem>
+                            )}
                           </DropdownMenuContent>
                         </DropdownMenu>
                       </div>
@@ -338,6 +351,21 @@ export default function SurveyListPage() {
       )}
       {dialog?.type === 'template' && (
         <SaveTemplateDialog key={dialog.survey.id} survey={dialog.survey} open onOpenChange={(o) => !o && setDialog(null)} />
+      )}
+      {dialog?.type === 'delete' && (
+        <ConfirmDialog
+          open
+          onOpenChange={(o) => !o && setDialog(null)}
+          destructive
+          title="Taslak silinsin mi?"
+          description={`"${dialog.survey.title}" taslağı kalıcı olarak silinir.`}
+          confirmLabel="Sil"
+          onConfirm={async () => {
+            await surveyService.remove(dialog.survey.id)
+            toast.success('Taslak silindi')
+            reload()
+          }}
+        />
       )}
       {dialog?.type === 'close' && (
         <ConfirmDialog

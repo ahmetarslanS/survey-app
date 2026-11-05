@@ -60,12 +60,13 @@ export function UpdateSurveyDialog({ survey, open, onOpenChange, onUpdated }) {
               <AlertDescription>Anketin süresi dolmuş. Yeni bir tarih seçtiğinizde anket tekrar yayına alınır.</AlertDescription>
             </Alert>
           )}
-          <div className="grid grid-cols-2 gap-2.5">
-            <FormField label="Tarih" htmlFor="upd-date">
-              <Input id="upd-date" type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+          {/* minmax(0, …): tarih/saat alanları sütunlarından taşmasın (bkz. SurveyBuilderPage) */}
+          <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,7rem)] gap-2">
+            <FormField label="Tarih" htmlFor="upd-date" className="min-w-0">
+              <Input id="upd-date" type="date" className="min-w-0 pr-2" value={date} onChange={(e) => setDate(e.target.value)} />
             </FormField>
-            <FormField label="Saat" htmlFor="upd-time">
-              <Input id="upd-time" type="time" value={time} onChange={(e) => setTime(e.target.value)} />
+            <FormField label="Saat" htmlFor="upd-time" className="min-w-0">
+              <Input id="upd-time" type="time" className="min-w-0 pr-2" value={time} onChange={(e) => setTime(e.target.value)} />
             </FormField>
           </div>
           <p className="-mt-2 text-xs text-muted-foreground">Saat dilimi: Europe/Istanbul</p>

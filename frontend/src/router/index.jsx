@@ -1,4 +1,4 @@
-import { createBrowserRouter, Navigate } from 'react-router-dom'
+import { createBrowserRouter, Navigate, useParams } from 'react-router-dom'
 
 import { AdminLayout } from '@/components/layout/AdminLayout'
 import { ProtectedRoute } from '@/components/layout/ProtectedRoute'
@@ -16,6 +16,16 @@ import SurveyReportPage from '@/pages/SurveyReportPage'
 import TemplatesPage from '@/pages/TemplatesPage'
 import ThanksPage from '@/pages/ThanksPage'
 
+/**
+ * Aynı bileşen farklı rotalarda yeniden kullanıldığında React state'i korur; /surveys/5/edit'ten "Anket Oluştur"a
+ * geçince eski taslak ekranda kalmasın diye builder anket id'sine göre anahtarlanır.
+ */
+// eslint-disable-next-line react-refresh/only-export-components
+function SurveyBuilderRoute() {
+  const { surveyId } = useParams()
+  return <SurveyBuilderPage key={surveyId ?? 'new'} />
+}
+
 export const router = createBrowserRouter([
   {
     element: <RootLayout />,
@@ -32,18 +42,14 @@ export const router = createBrowserRouter([
               { path: '/', element: <Navigate to="/surveys" replace /> },
               { path: '/dashboard', element: <DashboardPage /> },
               { path: '/surveys', element: <SurveyListPage /> },
-              { path: '/surveys/new', element: <SurveyBuilderPage /> },
+              { path: '/surveys/new', element: <SurveyBuilderRoute /> },
+              { path: '/surveys/:surveyId/edit', element: <SurveyBuilderRoute /> },
               { path: '/surveys/:surveyId/report', element: <SurveyReportPage /> },
               { path: '/templates', element: <TemplatesPage /> },
               { path: '/reports', element: <ReportsPage /> },
               { path: '/participants', element: <ParticipantListsPage /> },
               { path: '/help', element: <HelpPage /> },
             ],
-          },
-          // Önizleme yalnızca oturum açmış yöneticiye açık
-          {
-            element: <PublicLayout />,
-            children: [{ path: '/survey-preview', element: <SurveyFormPage preview /> }],
           },
         ],
       },
@@ -52,6 +58,10 @@ export const router = createBrowserRouter([
       {
         element: <PublicLayout />,
         children: [
+          // Builder'ın yeni sekmede açtığı önizleme. Backend'e istek atmaz, yalnızca bu tarayıcının localStorage'ındaki
+          // taslağı gösterir; bu yüzden oturum gerektirmez. (Oturum "Beni hatırla" kapalıyken sessionStorage'dadır ve
+          // yeni sekmeye her zaman taşınmaz; korumalı rota önizlemeyi login'e yönlendirebilirdi.)
+          { path: '/survey-preview', element: <SurveyFormPage preview /> },
           { path: '/survey/:surveyId', element: <SurveyFormPage /> },
           { path: '/thanks', element: <ThanksPage /> },
           { path: '/access-error', element: <AccessErrorPage /> },

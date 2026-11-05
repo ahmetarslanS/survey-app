@@ -27,6 +27,7 @@ public record ParticipantSurveyResponse(
             QuestionType type,
             Integer questionOrder,
             boolean isMandatory,
+            String sectionTitle,
             List<Option> options
     ) {
     }

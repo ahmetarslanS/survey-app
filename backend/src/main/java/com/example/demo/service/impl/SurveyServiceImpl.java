@@ -15,6 +15,8 @@ import com.example.demo.dto.AdminSurveyListResponse;
 import com.example.demo.dto.OptionReportResponse;
 import com.example.demo.dto.QuestionReportResponse;
 import com.example.demo.dto.SurveyReportResponse;
+import com.example.demo.dto.SendSurveyResponse;
+import com.example.demo.dto.SurveyDetailResponse;
 import com.example.demo.dao.entity.Status;
 import com.example.demo.dao.entity.Survey;
 import com.example.demo.dao.repository.SurveyRepository;
@@ -86,22 +88,10 @@ public class SurveyServiceImpl implements SurveyService {
         Survey survey = new Survey();
         Map<SurveyParticipant, String> invitationTokens = Map.of();
         if (request != null) {
-            survey.setTitle(request.getTitle());
-            survey.setDescription(request.getDescription());
             survey.setStatus(Status.LIVE);
-            survey.setEndDate(request.getEndDate());
-            survey.setIsAnonymous(request.getIsAnonymous());
             survey.setCreatedDateTime(LocalDateTime.now());
-            survey.setUpdatedDateTime(LocalDateTime.now());
-
-            if (!CollectionUtils.isEmpty(request.getQuestionList())) {
-                List<Question> questionList = request.getQuestionList();
-                for (int i = 0; i < questionList.size(); i++) {
-                    addQuestions(survey, questionList.get(i), i + 1);
-                }
-            }
-
-            invitationTokens = addParticipants(survey, request.getParticipantMails());
+            applyContent(survey, request);
+            invitationTokens = issueInvitationTokens(survey);
         }
         Survey surveyEntity = surveyRepository.save(survey);
         surveyRepository.flush();
@@ -111,11 +101,168 @@ public class SurveyServiceImpl implements SurveyService {
         return surveyEntity;
     }
 
+    // ---- Taslak anketler (FR-20..27, FR-11) ----
+
+    @Override
+    @Transactional
+    public Long createDraft(CreateSurveyRequest request) {
+        validateDraftRequest(request);
+        Survey survey = new Survey();
+        survey.setStatus(Status.DRAFT);
+        survey.setCreatedDateTime(LocalDateTime.now());
+        applyContent(survey, request);
+        return surveyRepository.save(survey).getId();
+    }
+
+    @Override
+    @Transactional
+    public Long updateDraft(Long surveyId, CreateSurveyRequest request) {
+        validateDraftRequest(request);
+        Survey survey = findDraft(surveyId, "Yalnızca taslak anketler düzenlenebilir.");
+
+        // Taslağın soruları ve katılımcıları baştan yazılır. Eski satırlar önce silinmeli; aksi halde aynı e-posta
+        // yeniden eklenince (survey_id, email) tekil kısıtına takılır.
+        survey.getQuestionList().clear();
+        survey.getParticipantList().clear();
+        surveyRepository.saveAndFlush(survey);
+
+        applyContent(survey, request);
+        surveyRepository.save(survey);
+        return survey.getId();
+    }
+
+    @Override
+    @Transactional
+    public SurveyDetailResponse getSurvey(Long surveyId) {
+        Survey survey = surveyRepository.findById(surveyId)
+                .orElseThrow(() -> new SurveyNotFoundException(surveyId));
+
+        List<SurveyDetailResponse.Question> questions = questionRepository.findAllWithAnswersBySurveyId(surveyId).stream()
+                .map(q -> new SurveyDetailResponse.Question(
+                        q.getId(),
+                        q.getQuestionText(),
+                        q.getType(),
+                        q.getQuestionOrder(),
+                        Boolean.TRUE.equals(q.getIsOptional()),
+                        q.getSectionTitle(),
+                        q.getAnswerList().stream()
+                                .map(a -> new SurveyDetailResponse.Option(a.getId(), a.getAnswerOrder(), a.getText()))
+                                .toList()))
+                .toList();
+        List<String> participantMails = survey.getParticipantList().stream()
+                .map(SurveyParticipant::getEmail)
+                .toList();
+
+        return new SurveyDetailResponse(
+                survey.getId(),
+                survey.getTitle(),
+                survey.getDescription(),
+                survey.getStatus(),
+                survey.getStatus() != null ? survey.getStatus().getDescription() : null,
+                survey.getEndDate(),
+                survey.getIsAnonymous(),
+                participantMails,
+                questions,
+                survey.getCreatedDateTime(),
+                survey.getUpdatedDateTime()
+        );
+    }
+
+    /** Taslağı yayınlar: eksiksiz olduğunu doğrular, davet tokenlarını üretir, mailleri gönderir (FR-42). */
+    @Override
+    @Transactional
+    public SendSurveyResponse sendSurvey(Long surveyId) {
+        Survey survey = findDraft(surveyId, "Yalnızca taslak anketler gönderilebilir.");
+
+        if (!StringUtils.hasText(survey.getTitle())) {
+            throw new IllegalArgumentException("Anket başlığı zorunludur.");
+        }
+        if (survey.getEndDate() == null || !survey.getEndDate().isAfter(LocalDateTime.now())) {
+            throw new IllegalArgumentException("Son katılım tarihi ileri bir tarih olmalıdır.");
+        }
+        if (survey.getQuestionList().isEmpty()) {
+            throw new IllegalArgumentException("Ankette en az bir soru olmalıdır.");
+        }
+        if (survey.getParticipantList().isEmpty()) {
+            throw new IllegalArgumentException("En az bir katılımcı eklenmelidir.");
+        }
+
+        survey.setStatus(Status.LIVE);
+        survey.setUpdatedDateTime(LocalDateTime.now());
+        Map<SurveyParticipant, String> invitationTokens = issueInvitationTokens(survey);
+        surveyRepository.saveAndFlush(survey);
+
+        int sent = sendInvitations(survey, invitationTokens);
+        return new SendSurveyResponse(survey.getId(), survey.getStatus(), survey.getEndDate(),
+                invitationTokens.size(), sent, invitationTokens.size() - sent);
+    }
+
+    /** BR-08: Yanıtı olan anket silinemez; taslakların yanıtı olamayacağı için yalnızca taslaklar silinir. */
+    @Override
+    @Transactional
+    public void deleteDraft(Long surveyId) {
+        Survey survey = findDraft(surveyId, "Yalnızca taslak anketler silinebilir.");
+        surveyRepository.delete(survey);
+    }
+
+    private Survey findDraft(Long surveyId, String notDraftMessage) {
+        Survey survey = surveyRepository.findById(surveyId)
+                .orElseThrow(() -> new SurveyNotFoundException(surveyId));
+        if (survey.getStatus() != Status.DRAFT) {
+            throw new IllegalArgumentException(notDraftMessage);
+        }
+        return survey;
+    }
+
+    private void validateDraftRequest(CreateSurveyRequest request) {
+        if (request == null || !StringUtils.hasText(request.getTitle())) {
+            throw new IllegalArgumentException("Taslağı kaydetmek için anket başlığı zorunludur.");
+        }
+    }
+
+    /** İstekteki başlık, açıklama, tarih, mod, sorular ve katılımcıları ankete yazar (token üretmez). */
+    private void applyContent(Survey survey, CreateSurveyRequest request) {
+        survey.setTitle(request.getTitle() != null ? request.getTitle().trim() : null);
+        survey.setDescription(request.getDescription());
+        survey.setEndDate(request.getEndDate());
+        survey.setIsAnonymous(request.getIsAnonymous());
+        survey.setUpdatedDateTime(LocalDateTime.now());
+
+        if (!CollectionUtils.isEmpty(request.getQuestionList())) {
+            List<Question> questionList = request.getQuestionList();
+            for (int i = 0; i < questionList.size(); i++) {
+                addQuestions(survey, questionList.get(i), i + 1);
+            }
+        }
+        addParticipants(survey, request.getParticipantMails());
+        survey.setParticipantCount(survey.getParticipantList().size());
+    }
+
+    /**
+     * Henüz tokenı olmayan katılımcılara davet tokenı üretir. DB'ye yalnızca hash yazılır;
+     * ham tokenlar mail gönderimi için yalnızca bu istek boyunca bellekte tutulur.
+     */
+    private Map<SurveyParticipant, String> issueInvitationTokens(Survey survey) {
+        Map<SurveyParticipant, String> invitationTokens = new LinkedHashMap<>();
+        for (SurveyParticipant participant : survey.getParticipantList()) {
+            if (participant.getTokenHash() != null) {
+                continue;
+            }
+            String token = invitationTokenService.generate();
+            participant.setTokenHash(invitationTokenService.hash(token));
+            participant.setInvitationStatus(InvitationStatus.CREATED);
+            invitationTokens.put(participant, token);
+        }
+        return invitationTokens;
+    }
+
     /**
      * Her katılımcıya kişiye özel linki gönderir. Bir alıcıdaki hata diğerlerini etkilemez;
      * başarılı gönderim SENT, başarısız gönderim FAILED olarak işaretlenir (§3.3).
+     *
+     * @return başarıyla gönderilen davet sayısı
      */
-    private void sendInvitations(Survey survey, Map<SurveyParticipant, String> invitationTokens) {
+    private int sendInvitations(Survey survey, Map<SurveyParticipant, String> invitationTokens) {
         int sent = 0;
         for (Map.Entry<SurveyParticipant, String> entry : invitationTokens.entrySet()) {
             SurveyParticipant participant = entry.getKey();
@@ -132,6 +279,7 @@ public class SurveyServiceImpl implements SurveyService {
             }
         }
         log.info("Davet gönderimi tamamlandı (surveyId={}): {}/{} başarılı.", survey.getId(), sent, invitationTokens.size());
+        return sent;
     }
 
     @Override
@@ -177,6 +325,11 @@ public class SurveyServiceImpl implements SurveyService {
                 );
 
         Status currentStatus = survey.getStatus();
+        // Taslak buradan yayına alınırsa davet tokenları üretilmez ve mail gitmez; gönderim /send ile yapılır.
+        if (currentStatus == Status.DRAFT) {
+            throw new IllegalArgumentException(
+                    "Taslak anketin durumu veya tarihi buradan değiştirilemez. Anketi düzenleyip gönderin.");
+        }
         Status targetStatus = resolveTargetStatus(currentStatus, request);
 
         // Both fields are validated before any change, so a request is never applied partially.
@@ -461,14 +614,10 @@ public class SurveyServiceImpl implements SurveyService {
         return String.join(" ", parts);
     }
 
-    /**
-     * Katılımcıları ekler ve her birine davet tokenı üretir. DB'ye yalnızca token hash'i yazılır;
-     * ham tokenlar mail gönderimi için yalnızca bu istek boyunca bellekte tutulur.
-     */
-    private Map<SurveyParticipant, String> addParticipants(Survey surveyEntity, List<String> participantMails) {
-        Map<SurveyParticipant, String> invitationTokens = new LinkedHashMap<>();
+    /** Katılımcıları ekler (tekrarlar ve boş adresler atlanır). Davet tokenları gönderimde üretilir. */
+    private void addParticipants(Survey surveyEntity, List<String> participantMails) {
         if (CollectionUtils.isEmpty(participantMails)) {
-            return invitationTokens;
+            return;
         }
 
         participantMails.stream()
@@ -476,17 +625,13 @@ public class SurveyServiceImpl implements SurveyService {
                 .map(mail -> mail.trim().toLowerCase())
                 .distinct()
                 .forEach(mail -> {
-                    String token = invitationTokenService.generate();
                     SurveyParticipant participantEntity = new SurveyParticipant();
                     participantEntity.setSurvey(surveyEntity);
                     participantEntity.setEmail(mail);
                     participantEntity.setIsResponded(false);
-                    participantEntity.setTokenHash(invitationTokenService.hash(token));
                     participantEntity.setInvitationStatus(InvitationStatus.CREATED);
                     surveyEntity.getParticipantList().add(participantEntity);
-                    invitationTokens.put(participantEntity, token);
                 });
-        return invitationTokens;
     }
 
     private void addQuestions(Survey surveyEntity, Question questionRequest, int defaultOrder) {
@@ -499,6 +644,8 @@ public class SurveyServiceImpl implements SurveyService {
         questionEntity.setQuestionText(questionRequest.getQuestionText());
         questionEntity.setType(questionRequest.getType());
         questionEntity.setIsOptional(Boolean.TRUE.equals(questionRequest.getIsOptional()));
+        questionEntity.setSectionTitle(StringUtils.hasText(questionRequest.getSectionTitle())
+                ? questionRequest.getSectionTitle().trim() : null);
         questionEntity.setQuestionOrder(
                 questionRequest.getQuestionOrder() != null ? questionRequest.getQuestionOrder() : defaultOrder);
 

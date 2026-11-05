@@ -3,6 +3,7 @@ package com.example.demo.service.impl;
 import com.example.demo.dao.entity.*;
 import com.example.demo.dao.repository.QuestionRepository;
 import com.example.demo.dao.repository.SurveyParticipantRepository;
+import com.example.demo.dao.repository.SurveyRepository;
 import com.example.demo.dao.repository.SurveySubmissionRepository;
 import com.example.demo.dto.ParticipantSurveyResponse;
 import com.example.demo.dto.SubmitSurveyRequest;
@@ -37,6 +38,7 @@ public class ParticipantSurveyServiceImpl implements ParticipantSurveyService {
     private final SurveyParticipantRepository participantRepository;
     private final QuestionRepository questionRepository;
     private final SurveySubmissionRepository submissionRepository;
+    private final SurveyRepository surveyRepository;
     private final InvitationTokenService tokenService;
 
     @Override
@@ -138,6 +140,9 @@ public class ParticipantSurveyServiceImpl implements ParticipantSurveyService {
         participant.setLastAccessDateTime(now);
         participant.setDraftAnswers(null);
         participant.setDraftSavedDateTime(null);
+        // Anketlerim listesindeki yanıt oranı bu sayaçtan okunur. Katılımcı satırı kilitli olduğundan
+        // aynı token ile iki kez artırılamaz.
+        surveyRepository.incrementResponseCount(survey.getId());
         log.info("Anket yanıtı alındı (surveyId={}, anonim={}).", survey.getId(), survey.getIsAnonymous());
     }
 
@@ -257,6 +262,7 @@ public class ParticipantSurveyServiceImpl implements ParticipantSurveyService {
                 question.getType(),
                 question.getQuestionOrder(),
                 !Boolean.TRUE.equals(question.getIsOptional()),
+                question.getSectionTitle(),
                 question.getType() == QuestionType.FREETEXT ? List.of() : options
         );
     }

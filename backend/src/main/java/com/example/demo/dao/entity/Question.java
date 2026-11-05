@@ -33,6 +33,9 @@ public class Question {
 
     private Boolean isOptional;
 
+    // FR-21: Sorunun ait olduğu bölümün adı. Bölüm sırası, soruların questionOrder sırasından türetilir.
+    private String sectionTitle;
+
     @OneToMany(mappedBy = "question", cascade = CascadeType.ALL, orphanRemoval = true)
     @OrderBy("answerOrder ASC")
     private List<Answer> answerList = new ArrayList<>();

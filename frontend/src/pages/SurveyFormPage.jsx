@@ -1,6 +1,6 @@
 import { ArrowLeft, ArrowRight, Cloud, CloudOff, Eye, Send } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { toast } from 'sonner'
 
 import { Alert, AlertDescription } from '@/components/shadcnui/alert'
@@ -86,7 +86,20 @@ export default function SurveyFormPage({ preview = false }) {
       </div>
     )
   }
-  if (questions.length === 0) return <ErrorState error={new Error('Bu ankette soru bulunmuyor.')} title="Anket boş" />
+  if (questions.length === 0) {
+    return (
+      <ErrorState
+        title="Anket boş"
+        error={
+          new Error(
+            preview
+              ? 'Önizlenecek soru yok. Anket oluşturma ekranında soru ekleyip tekrar "Önizle"ye basın.'
+              : 'Bu ankette soru bulunmuyor.',
+          )
+        }
+      />
+    )
+  }
 
   const q = questions[step]
   const last = step === questions.length - 1
@@ -136,8 +149,7 @@ export default function SurveyFormPage({ preview = false }) {
     }
 
     if (preview) {
-      toast.info('Önizlemede yanıtlar kaydedilmez.')
-      navigate('/surveys/new')
+      toast.info('Önizleme tamamlandı. Önizlemede yanıtlar kaydedilmez.')
       return
     }
 
@@ -161,10 +173,11 @@ export default function SurveyFormPage({ preview = false }) {
         <Alert variant="warning" className="mb-5">
           <Eye />
           <AlertDescription>
-            Önizleme modundasınız; yanıtlar kaydedilmez.{' '}
-            <Link to="/surveys/new" className="font-semibold underline">
-              Düzenlemeye dön
-            </Link>
+            Önizleme modundasınız; yanıtlar kaydedilmez. Anket oluşturma ekranı diğer sekmede açık.{' '}
+            {/* Önizleme builder'dan window.open ile açılır; bu yüzden sekme kapatılabilir */}
+            <button type="button" className="font-semibold underline" onClick={() => window.close()}>
+              Önizlemeyi kapat
+            </button>
           </AlertDescription>
         </Alert>
       )}

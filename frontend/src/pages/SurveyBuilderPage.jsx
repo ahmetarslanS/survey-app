@@ -1,13 +1,15 @@
 import { closestCenter, DndContext, KeyboardSensor, PointerSensor, useSensor, useSensors } from '@dnd-kit/core'
 import { arrayMove, SortableContext, sortableKeyboardCoordinates, verticalListSortingStrategy } from '@dnd-kit/sortable'
-import { CalendarDays, Clock, Eye, LayoutTemplate, PlusCircle, Save, Send, Users } from 'lucide-react'
+import { Eye, FileWarning, LayoutTemplate, PlusCircle, Save, Send, Users } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import { useBlocker, useNavigate, useSearchParams } from 'react-router-dom'
+import { Link, useBlocker, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { toast } from 'sonner'
 
 import { ConfirmDialog } from '@/components/common/ConfirmDialog'
+import { ErrorState } from '@/components/common/ErrorState'
 import { FormField } from '@/components/common/FormField'
 import { PageHeader } from '@/components/common/PageHeader'
+import { StateCard } from '@/components/common/StateCard'
 import { Alert, AlertDescription, AlertTitle } from '@/components/shadcnui/alert'
 import { Badge } from '@/components/shadcnui/badge'
 import { Button } from '@/components/shadcnui/button'
@@ -29,36 +31,77 @@ import { ParticipantsDialog } from '@/components/survey/ParticipantsDialog'
 import { QuestionDialog } from '@/components/survey/QuestionDialog'
 import { SentDialog } from '@/components/survey/SentDialog'
 import { SortableSection } from '@/components/survey/SortableSection'
-import { toLocalDateTime } from '@/lib/format'
+import { formatDateTime, isFutureDateTime } from '@/lib/format'
 import {
   allQuestions,
-  clearDraft,
   createEmptyDraft,
-  loadDraft,
+  detailToDraft,
   newId,
-  saveDraft,
   savePreview,
   templateToDraft,
   toCreateRequest,
-  validateDraft,
+  validateForSave,
+  validateForSend,
 } from '@/lib/surveyDraft'
 import { surveyService } from '@/services/surveyService'
 import { templateService } from '@/services/templateService'
 
 const today = () => new Date().toISOString().slice(0, 10)
+const PREVIEW_WINDOW = 'survey-preview'
 
+/** Gönderim hatasında kırmızıyla işaretlenecek alanlar */
+function sendErrorFields(draft) {
+  return {
+    title: !draft.title.trim(),
+    endDate: !draft.endDate || !isFutureDateTime(draft.endDate, draft.endTime),
+    participants: draft.participants.length === 0,
+  }
+}
+
+function Stat({ label, value }) {
+  return (
+    <div className="rounded-lg bg-secondary px-2 py-2 text-center">
+      <div className="text-base font-semibold">{value}</div>
+      <div className="text-[11px] text-muted-foreground">{label}</div>
+    </div>
+  )
+}
+
+/**
+ * S-03: Anket oluşturma / taslak düzenleme.
+ *  - /surveys/new                  boş anket
+ *  - /surveys/new?template={id}    şablondan (FR-12)
+ *  - /surveys/{id}/edit            kayıtlı taslak (yalnızca DRAFT)
+ *
+ * "Taslağı Kaydet" anketi backend'e DRAFT olarak yazar (Anketlerim'de görünür, mail gitmez).
+ * "Gönder" önce kaydeder, sonra taslağı yayına alıp davetleri gönderir; gönderim başarısız olsa da taslak kaybolmaz.
+ */
 export default function SurveyBuilderPage() {
   const navigate = useNavigate()
-  const [draft, setDraft] = useState(() => loadDraft() ?? createEmptyDraft())
+  const { surveyId: routeSurveyId } = useParams()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const templateId = routeSurveyId ? null : searchParams.get('template')
+
+  const [surveyId, setSurveyId] = useState(routeSurveyId ?? null)
+  const [draft, setDraft] = useState(createEmptyDraft)
+  const [load, setLoad] = useState({
+    status: routeSurveyId || templateId ? 'loading' : 'ready', // loading | ready | error | notDraft
+    error: null,
+  })
+  const [templateName, setTemplateName] = useState(null)
+  const [templateError, setTemplateError] = useState(null)
+  const [lastSavedAt, setLastSavedAt] = useState(null)
   const [dirty, setDirty] = useState(false)
   const dirtyRef = useRef(false)
+  // Yeni taslak kaydedilince URL /surveys/{id}/edit olur; aynı bileşen kalırsa taslak tekrar yüklenmesin
+  const createdIdRef = useRef(null)
 
   const [questionDialog, setQuestionDialog] = useState(null) // { sectionId, question | null }
   const [participantsOpen, setParticipantsOpen] = useState(false)
   const [confirm, setConfirm] = useState(null) // { type: 'question' | 'section', ... }
-  const [errors, setErrors] = useState([])
-  const [sending, setSending] = useState(false)
-  const [sent, setSent] = useState(null) // { count, endDate }
+  const [errors, setErrors] = useState(null) // { title, items: [] }
+  const [busy, setBusy] = useState(null) // 'save' | 'send' | null
+  const [sent, setSent] = useState(null) // SendSurveyResponse
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -74,11 +117,34 @@ export default function SurveyBuilderPage() {
     setDirty(value)
   }
 
-  // FR-12: /surveys/new?template={id} -> şablonu taslağa yükle; kullanıcı soruları düzenleyip gönderir
-  const [searchParams, setSearchParams] = useSearchParams()
-  const templateId = searchParams.get('template')
-  const [template, setTemplate] = useState({ status: templateId ? 'loading' : 'idle', name: null, error: null })
+  // Kayıtlı taslağı yükle
+  useEffect(() => {
+    if (!routeSurveyId || routeSurveyId === createdIdRef.current) return undefined
+    const run = { cancelled: false }
+    surveyService
+      .get(routeSurveyId)
+      .then((detail) => {
+        if (run.cancelled) return
+        if (detail.status !== 'DRAFT') {
+          setLoad({ status: 'notDraft', error: null })
+          return
+        }
+        setDraft(detailToDraft(detail))
+        setSurveyId(String(detail.id))
+        setLastSavedAt(detail.updatedDateTime)
+        markDirty(false)
+        setLoad({ status: 'ready', error: null })
+      })
+      .catch((e) => {
+        if (!run.cancelled) setLoad({ status: 'error', error: e })
+      })
+    return () => {
+      run.cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeSurveyId])
 
+  // FR-12: /surveys/new?template={id} -> şablonu yeni taslağa yükle
   useEffect(() => {
     if (!templateId) return undefined
     const run = { cancelled: false }
@@ -88,13 +154,16 @@ export default function SurveyBuilderPage() {
         if (run.cancelled) return
         setDraft(templateToDraft(t))
         markDirty(true)
-        setTemplate({ status: 'loaded', name: t.name, error: null })
+        setTemplateName(t.name)
         toast.success(`"${t.name}" şablonu yüklendi`)
-        // Parametre kaldırılır ki yenilemede/"Taslağı Kaydet" sonrası şablon tekrar yüklenip taslağın üzerine yazmasın
+        // Parametre kaldırılır ki sayfa yenilenince şablon tekrar yüklenip değişikliklerin üzerine yazmasın
         setSearchParams({}, { replace: true })
       })
       .catch((e) => {
-        if (!run.cancelled) setTemplate({ status: 'error', name: null, error: e })
+        if (!run.cancelled) setTemplateError(e)
+      })
+      .finally(() => {
+        if (!run.cancelled) setLoad({ status: 'ready', error: null })
       })
     return () => {
       run.cancelled = true
@@ -114,7 +183,7 @@ export default function SurveyBuilderPage() {
   function update(fn) {
     setDraft((prev) => fn(structuredClone(prev)))
     markDirty(true)
-    setErrors([])
+    setErrors(null)
   }
 
   const setField = (field, value) => update((d) => ({ ...d, [field]: value }))
@@ -164,55 +233,85 @@ export default function SurveyBuilderPage() {
     })
 
   // ---- Kaydet / Önizle / Gönder ----
-  function handleSaveDraft() {
-    saveDraft(draft)
+
+  /** Taslağı backend'e yazar (ilk kayıtta oluşturur). Dönen değer: surveyId */
+  async function persistDraft() {
+    const payload = toCreateRequest(draft)
+    let id = surveyId
+    if (id) {
+      await surveyService.updateDraft(id, payload)
+    } else {
+      id = String(await surveyService.createDraft(payload))
+      setSurveyId(id)
+      createdIdRef.current = id
+    }
     markDirty(false)
-    toast.success('Taslak kaydedildi')
+    setLastSavedAt(new Date().toISOString())
+    return id
   }
 
-  function handlePreview() {
-    if (allQuestions(draft).length === 0) {
-      toast.error('Önizleme için en az bir soru ekleyin.')
+  async function handleSaveDraft() {
+    const found = validateForSave(draft)
+    if (found.length) {
+      setErrors({ title: 'Taslak kaydedilemedi', items: found, fields: { title: true } })
       return
     }
-    // Önizlemeden dönünce değişiklikler kaybolmasın diye taslak da kaydedilir
-    saveDraft(draft)
-    savePreview(draft)
-    markDirty(false)
-    navigate('/survey-preview')
+    setBusy('save')
+    try {
+      const wasNew = !surveyId
+      const id = await persistDraft()
+      toast.success('Taslak kaydedildi', { description: 'Anketlerim listesinde "Taslak" olarak görünür.' })
+      if (wasNew) navigate(`/surveys/${id}/edit`, { replace: true })
+    } catch (e) {
+      setErrors({ title: 'Taslak kaydedilemedi', items: [e.message] })
+    } finally {
+      setBusy(null)
+    }
   }
 
   async function handleSend() {
-    const found = validateDraft(draft)
-    setErrors(found)
-    if (found.length) return
-    setSending(true)
+    const found = validateForSend(draft)
+    if (found.length) {
+      setErrors({ title: 'Anket gönderilemedi', items: found, fields: sendErrorFields(draft) })
+      return
+    }
+    setBusy('send')
+    let savedId = null
     try {
-      await surveyService.create(toCreateRequest(draft))
-      clearDraft()
-      markDirty(false)
-      setSent({ count: draft.participants.length, endDate: toLocalDateTime(draft.endDate, draft.endTime) })
+      savedId = await persistDraft()
+      setSent(await surveyService.send(savedId))
     } catch (e) {
-      setErrors([e.message])
+      // Kayıt başarılı, gönderim başarısızsa taslak saklanır; surveyId set edildiği için sonraki kayıt aynı taslağı günceller.
+      // (URL bilerek değiştirilmez: rota değişince builder yeniden kurulur ve bu hata mesajı kaybolurdu.)
+      setErrors({
+        title: 'Anket gönderilemedi',
+        items: [e.message, ...(savedId ? ['Anket taslak olarak kaydedildi; düzeltip tekrar gönderebilirsiniz.'] : [])],
+      })
     } finally {
-      setSending(false)
+      setBusy(null)
     }
   }
 
-  const questionCount = allQuestions(draft).length
-  const mandatoryCount = allQuestions(draft).filter((q) => q.mandatory).length
-  // Soru numaraları anket genelinde ardışıktır; sıra değişince otomatik güncellenir (FR-24)
-  const startNumbers = draft.sections.map(
-    (_, i) => 1 + draft.sections.slice(0, i).reduce((sum, s) => sum + s.questions.length, 0),
-  )
+  function handlePreview() {
+    // Katılımcının göreceği form yeni sekmede açılır; buradaki kaydedilmemiş değişiklikler kaybolmaz.
+    // Sabit pencere adı: tekrar basınca yeni sekme yığılmaz, açık önizleme sekmesi güncel taslakla yenilenir.
+    savePreview(draft)
+    window.open('/survey-preview', PREVIEW_WINDOW)
+  }
 
-  const dialogSection = questionDialog ? section(draft, questionDialog.sectionId) : null
+  // ---- Ekran ----
 
-  if (template.status === 'loading') {
+  const pageTitle = surveyId ? 'Taslağı Düzenle' : 'Anket Oluşturma'
+  const breadcrumb = [
+    templateName ? { label: 'Şablonlar', to: '/templates' } : { label: 'Anketlerim', to: '/surveys' },
+    { label: pageTitle },
+  ]
+
+  if (load.status === 'loading') {
     return (
       <>
-        <PageHeader breadcrumb={[{ label: 'Şablonlar', to: '/templates' }, { label: 'Anket Oluşturma' }]} title="Anket Oluşturma" />
-        <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,1fr)_300px]">
+        <PageHeader breadcrumb={breadcrumb} title={pageTitle} />
+        <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_340px]">
           <div className="flex flex-col gap-4">
             <Skeleton className="h-40 rounded-xl" />
             <Skeleton className="h-64 rounded-xl" />
@@ -222,67 +321,93 @@ export default function SurveyBuilderPage() {
       </>
     )
   }
+  if (load.status === 'error') {
+    return (
+      <>
+        <PageHeader breadcrumb={breadcrumb} title={pageTitle} />
+        <ErrorState error={load.error} title="Anket yüklenemedi" />
+      </>
+    )
+  }
+  if (load.status === 'notDraft') {
+    return (
+      <>
+        <PageHeader breadcrumb={breadcrumb} title={pageTitle} />
+        <StateCard
+          icon={FileWarning}
+          tone="warning"
+          title="Bu anket yayınlanmış"
+          actions={
+            <Button asChild>
+              <Link to="/surveys">Anketlerime dön</Link>
+            </Button>
+          }
+        >
+          Yalnızca taslak anketler düzenlenebilir. Yayındaki ankette soru yapısı kilitlidir; bitiş tarihini Anketlerim
+          listesinden güncelleyebilirsiniz.
+        </StateCard>
+      </>
+    )
+  }
+
+  const questionCount = allQuestions(draft).length
+  const mandatoryCount = allQuestions(draft).filter((q) => q.mandatory).length
+  // Soru numaraları anket genelinde ardışıktır; sıra değişince otomatik güncellenir (FR-24)
+  const startNumbers = draft.sections.map(
+    (_, i) => 1 + draft.sections.slice(0, i).reduce((sum, s) => sum + s.questions.length, 0),
+  )
+  const dialogSection = questionDialog ? section(draft, questionDialog.sectionId) : null
+
+  const invalid = errors?.fields ?? {}
 
   return (
     <>
-      <PageHeader
-        breadcrumb={[{ label: 'Anketlerim', to: '/surveys' }, { label: 'Anket Oluşturma' }]}
-        title="Anket Oluşturma"
-        meta={
-          <>
-            <Badge variant="secondary">Taslak</Badge>
-            {template.name && (
-              <Badge>
-                <LayoutTemplate />
-                Şablon: {template.name}
-              </Badge>
-            )}
-            {dirty ? 'Kaydedilmemiş değişiklikler var' : 'Tüm değişiklikler kaydedildi'}
-          </>
-        }
-        actions={
-          <>
-            <Button variant="outline" onClick={handlePreview}>
-              <Eye />
-              Önizle
-            </Button>
-            <Button variant="outline" onClick={handleSaveDraft}>
-              <Save />
-              Taslağı Kaydet
-            </Button>
-            <Button onClick={handleSend} disabled={sending}>
-              <Send />
-              {sending ? 'Gönderiliyor…' : 'Gönder'}
-            </Button>
-          </>
-        }
-      />
+      {/* Sağ panel sayfanın en üstünden başlar ve soldaki menü gibi ekrana sabitlenir (sticky); sayfa kaydırıldığında
+          yalnızca soldaki anket içeriği kayar. Hata mesajları da panelde, butonların hemen üstünde gösterilir. */}
+      <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_340px]">
+        <div className="min-w-0">
+          <PageHeader
+            breadcrumb={breadcrumb}
+            title={pageTitle}
+            meta={
+              <>
+                <Badge variant="secondary">Taslak</Badge>
+                {templateName && (
+                  <Badge>
+                    <LayoutTemplate />
+                    Şablon: {templateName}
+                  </Badge>
+                )}
+                {dirty
+                  ? 'Kaydedilmemiş değişiklikler var'
+                  : lastSavedAt
+                    ? `Son kayıt: ${formatDateTime(lastSavedAt)}`
+                    : 'Henüz kaydedilmedi'}
+              </>
+            }
+            actions={
+              <Button variant="outline" onClick={handlePreview}>
+                <Eye />
+                Önizle
+              </Button>
+            }
+          />
 
-      {template.status === 'error' && (
-        <Alert variant="destructive" className="mb-5">
-          <AlertTitle>Şablon yüklenemedi</AlertTitle>
-          <AlertDescription>{template.error?.message} Boş bir anketle devam edebilirsiniz.</AlertDescription>
-        </Alert>
-      )}
+          {templateError && (
+            <Alert variant="destructive" className="mb-5">
+              <AlertTitle>Şablon yüklenemedi</AlertTitle>
+              <AlertDescription>{templateError.message} Boş bir anketle devam edebilirsiniz.</AlertDescription>
+            </Alert>
+          )}
 
-      {errors.length > 0 && (
-        <Alert variant="destructive" className="mb-5">
-          <AlertTitle>Anket gönderilemedi</AlertTitle>
-          <AlertDescription>
-            <ul className="list-disc pl-4">
-              {errors.map((e) => (
-                <li key={e}>{e}</li>
-              ))}
-            </ul>
-          </AlertDescription>
-        </Alert>
-      )}
-
-      <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,1fr)_300px]">
-        <div>
           <Card className="mb-4 flex flex-col gap-3.5 p-[18px]">
             <FormField label="Anket başlığı" htmlFor="survey-title">
-              <Input id="survey-title" value={draft.title} onChange={(e) => setField('title', e.target.value)} />
+              <Input
+                id="survey-title"
+                aria-invalid={invalid.title || undefined}
+                value={draft.title}
+                onChange={(e) => setField('title', e.target.value)}
+              />
             </FormField>
             <FormField label="Açıklama" htmlFor="survey-description">
               <Textarea
@@ -296,36 +421,32 @@ export default function SurveyBuilderPage() {
 
           <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleSectionDragEnd}>
             <SortableContext items={draft.sections.map((s) => s.id)} strategy={verticalListSortingStrategy}>
-              {draft.sections.map((s, i) => {
-                return (
-                  <SortableSection
-                    key={s.id}
-                    section={s}
-                    index={i}
-                    startNumber={startNumbers[i]}
-                    canDelete={draft.sections.length > 1}
-                    onRename={(title) =>
-                      update((d) => {
-                        section(d, s.id).title = title
-                        return d
-                      })
-                    }
-                    onDelete={() =>
-                      s.questions.length ? setConfirm({ type: 'section', section: s }) : deleteSection(s.id)
-                    }
-                    onAddQuestion={() => setQuestionDialog({ sectionId: s.id, question: null })}
-                    onEditQuestion={(q) => setQuestionDialog({ sectionId: s.id, question: q })}
-                    onCopyQuestion={(q) => copyQuestion(s.id, q)}
-                    onDeleteQuestion={(q) => setConfirm({ type: 'question', sectionId: s.id, question: q })}
-                    onReorderQuestions={(questions) =>
-                      update((d) => {
-                        section(d, s.id).questions = questions
-                        return d
-                      })
-                    }
-                  />
-                )
-              })}
+              {draft.sections.map((s, i) => (
+                <SortableSection
+                  key={s.id}
+                  section={s}
+                  index={i}
+                  startNumber={startNumbers[i]}
+                  canDelete={draft.sections.length > 1}
+                  onRename={(title) =>
+                    update((d) => {
+                      section(d, s.id).title = title
+                      return d
+                    })
+                  }
+                  onDelete={() => (s.questions.length ? setConfirm({ type: 'section', section: s }) : deleteSection(s.id))}
+                  onAddQuestion={() => setQuestionDialog({ sectionId: s.id, question: null })}
+                  onEditQuestion={(q) => setQuestionDialog({ sectionId: s.id, question: q })}
+                  onCopyQuestion={(q) => copyQuestion(s.id, q)}
+                  onDeleteQuestion={(q) => setConfirm({ type: 'question', sectionId: s.id, question: q })}
+                  onReorderQuestions={(questions) =>
+                    update((d) => {
+                      section(d, s.id).questions = questions
+                      return d
+                    })
+                  }
+                />
+              ))}
             </SortableContext>
           </DndContext>
 
@@ -335,67 +456,93 @@ export default function SurveyBuilderPage() {
           </Button>
         </div>
 
-        <Card className="sticky top-5 flex flex-col gap-4 p-[18px]">
-          <h2 className="text-base font-semibold">Anket Ayarları</h2>
+        <Card className="lg:sticky lg:top-6 lg:max-h-[calc(100vh-3rem)]">
+          {/* Ayarlar kompakt tutulur, panel normal ekran yüksekliklerinde kaymaz. Çok kısa pencerelerde yalnızca bu
+              bölüm kayar; hata mesajı ve butonlar (alt bölüm) her zaman görünür kalır. */}
+          <div className="flex flex-col gap-4 p-[18px] lg:min-h-0 lg:overflow-y-auto">
+            <h2 className="text-base font-semibold">Anket Ayarları</h2>
 
-          <FormField label="Bitiş tarihi ve saati" hint="Saat dilimi: Europe/Istanbul">
-            <div className="grid grid-cols-2 gap-2.5">
-              <div className="relative">
-                <CalendarDays className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-subtle" />
+            <FormField label="Bitiş tarihi ve saati" hint="Saat dilimi: Europe/Istanbul">
+              {/* Tarih alanı, takvim ikonu dahil içeriğine yetecek genişlikte; saat alanı sabit genişlikte */}
+              <div className="grid grid-cols-[minmax(0,1fr)_7.5rem] gap-2">
                 <Input
                   type="date"
                   aria-label="Bitiş tarihi"
+                  aria-invalid={invalid.endDate || undefined}
                   min={today()}
-                  className="pl-8"
                   value={draft.endDate}
                   onChange={(e) => setField('endDate', e.target.value)}
                 />
-              </div>
-              <div className="relative">
-                <Clock className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-subtle" />
                 <Input
                   type="time"
                   aria-label="Bitiş saati"
-                  className="pl-8"
+                  aria-invalid={invalid.endDate || undefined}
                   value={draft.endTime}
                   onChange={(e) => setField('endTime', e.target.value)}
                 />
               </div>
+            </FormField>
+
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="font-medium">Anonim yanıt</div>
+                <div className="mt-0.5 text-xs text-muted-foreground">Yanıtlar kişiyle ilişkilendirilmez</div>
+              </div>
+              <Switch aria-label="Anonim yanıt" checked={draft.anonymous} onCheckedChange={(v) => setField('anonymous', v)} />
             </div>
-          </FormField>
 
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <div className="font-medium">Anonim yanıt</div>
-              <div className="mt-0.5 text-xs text-muted-foreground">Yanıtlar kişiyle ilişkilendirilmez</div>
+            <Separator />
+
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="font-medium">Katılımcılar</div>
+                <div className={invalid.participants ? 'text-xs text-destructive' : 'text-xs text-muted-foreground'}>
+                  {draft.participants.length} kişi
+                </div>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                aria-invalid={invalid.participants || undefined}
+                className="aria-invalid:border-destructive"
+                onClick={() => setParticipantsOpen(true)}
+              >
+                <Users />
+                Yönet
+              </Button>
             </div>
-            <Switch aria-label="Anonim yanıt" checked={draft.anonymous} onCheckedChange={(v) => setField('anonymous', v)} />
+
+            <div className="grid grid-cols-3 gap-2">
+              <Stat label="Bölüm" value={draft.sections.length} />
+              <Stat label="Soru" value={questionCount} />
+              <Stat label="Zorunlu" value={mandatoryCount} />
+            </div>
           </div>
 
-          <Separator />
-
-          <div className="flex items-center justify-between">
-            <span className="text-muted-foreground">Katılımcılar</span>
-            <b>{draft.participants.length} kişi</b>
-          </div>
-          <Button variant="outline" className="justify-center" onClick={() => setParticipantsOpen(true)}>
-            <Users />
-            Katılımcıları Yönet
-          </Button>
-
-          <Separator />
-
-          <div className="flex items-center justify-between">
-            <span className="text-muted-foreground">Bölüm</span>
-            <b>{draft.sections.length}</b>
-          </div>
-          <div className="flex items-center justify-between">
-            <span className="text-muted-foreground">Soru</span>
-            <b>{questionCount}</b>
-          </div>
-          <div className="flex items-center justify-between">
-            <span className="text-muted-foreground">Zorunlu soru</span>
-            <b>{mandatoryCount}</b>
+          <div className="flex shrink-0 flex-col gap-2.5 border-t p-[18px]">
+            {errors && (
+              <Alert variant="destructive" role="alert" className="px-3 py-2.5">
+                <AlertTitle>{errors.title}</AlertTitle>
+                <AlertDescription>
+                  <ul className="list-disc pl-4 text-xs">
+                    {errors.items.map((e) => (
+                      <li key={e}>{e}</li>
+                    ))}
+                  </ul>
+                </AlertDescription>
+              </Alert>
+            )}
+            <Button variant="outline" className="w-full" onClick={handleSaveDraft} disabled={Boolean(busy)}>
+              <Save />
+              {busy === 'save' ? 'Kaydediliyor…' : 'Taslağı Kaydet'}
+            </Button>
+            <Button className="w-full" onClick={handleSend} disabled={Boolean(busy)}>
+              <Send />
+              {busy === 'send' ? 'Gönderiliyor…' : 'Gönder'}
+            </Button>
+            <p className="text-center text-xs text-muted-foreground">
+              Gönder, anketi kaydedip katılımcılara davet maili gönderir.
+            </p>
           </div>
         </Card>
       </div>
@@ -436,18 +583,15 @@ export default function SurveyBuilderPage() {
         />
       )}
 
-      <SentDialog
-        open={Boolean(sent)}
-        participantCount={sent?.count}
-        endDate={sent?.endDate}
-        onClose={() => navigate('/surveys')}
-      />
+      <SentDialog open={Boolean(sent)} result={sent} onClose={() => navigate('/surveys')} />
 
       <Dialog open={blocker.state === 'blocked'} onOpenChange={(o) => !o && blocker.reset?.()}>
         <DialogContent className="sm:max-w-[420px]">
           <DialogHeader>
             <DialogTitle>Kaydedilmemiş değişiklikler</DialogTitle>
-            <DialogDescription>Bu sayfadan ayrılırsanız yaptığınız değişiklikler kaybolacak.</DialogDescription>
+            <DialogDescription>
+              Bu sayfadan ayrılırsanız kaydetmediğiniz değişiklikler kaybolacak. Saklamak için önce "Taslağı Kaydet"e basın.
+            </DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button variant="outline" onClick={() => blocker.reset?.()}>

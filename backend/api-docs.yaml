@@ -656,6 +656,28 @@ paths:
                   $ref: '#/components/schemas/AdminSurveyListResponse'
 
   /admin/surveys/{surveyId}:
+    get:
+      tags: [Admin]
+      summary: Get the full content of a survey
+      description: Used to open a draft in the builder. Questions include sectionTitle and options; participant mails are listed.
+      parameters:
+        - { name: surveyId, in: path, required: true, schema: { type: integer, format: int64 } }
+      responses:
+        "200":
+          description: Survey detail
+        "404":
+          description: Survey not found
+    delete:
+      tags: [Admin]
+      summary: Delete a draft
+      description: Only DRAFT surveys can be deleted (BR-08).
+      parameters:
+        - { name: surveyId, in: path, required: true, schema: { type: integer, format: int64 } }
+      responses:
+        "204":
+          description: Deleted
+        "400":
+          description: Not a draft
     patch:
       tags: [Admin]
       summary: Update survey status and/or end date
@@ -705,6 +727,71 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+
+  # Draft flow: save as DRAFT (no tokens, no mail) -> edit -> send (LIVE + invitation mails).
+  /admin/surveys/drafts:
+    post:
+      tags: [Admin]
+      summary: Save a survey as draft
+      description: Only the title is required. Questions may carry sectionTitle. No mail is sent.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSurveyRequest'
+      responses:
+        "201":
+          description: Draft created, returns the survey id
+        "400":
+          description: Title missing or invalid question
+
+  /admin/surveys/{surveyId}/draft:
+    put:
+      tags: [Admin]
+      summary: Replace the content of a draft
+      description: Questions and participants are rewritten. Only for DRAFT surveys.
+      parameters:
+        - { name: surveyId, in: path, required: true, schema: { type: integer, format: int64 } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSurveyRequest'
+      responses:
+        "200":
+          description: Draft updated, returns the survey id
+        "400":
+          description: Not a draft, title missing or invalid question
+        "404":
+          description: Survey not found
+
+  /admin/surveys/{surveyId}/send:
+    post:
+      tags: [Admin]
+      summary: Publish a draft and send invitations
+      description: >
+        Requires title, a future end date, at least one question and one participant.
+        Generates invitation tokens and sends one mail per participant.
+      parameters:
+        - { name: surveyId, in: path, required: true, schema: { type: integer, format: int64 } }
+      responses:
+        "200":
+          description: Sending summary
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  surveyId: { type: integer, format: int64 }
+                  status: { $ref: '#/components/schemas/SurveyStatus' }
+                  endDate: { type: string, format: date-time }
+                  participantCount: { type: integer }
+                  sentCount: { type: integer }
+                  failedCount: { type: integer }
+        "400":
+          description: Not a draft or incomplete survey
 
   # Participant endpoints. Participants have no account: the invitation token from the mail link
   # ({frontend}/survey/{surveyId}?token=...) is sent in the X-Survey-Token header.

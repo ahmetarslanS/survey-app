@@ -3,6 +3,7 @@ package com.example.demo.service.impl;
 import com.example.demo.dao.entity.*;
 import com.example.demo.dao.repository.QuestionRepository;
 import com.example.demo.dao.repository.SurveyParticipantRepository;
+import com.example.demo.dao.repository.SurveyRepository;
 import com.example.demo.dao.repository.SurveySubmissionRepository;
 import com.example.demo.dto.ParticipantSurveyResponse;
 import com.example.demo.dto.SubmitSurveyRequest;
@@ -28,6 +29,7 @@ class ParticipantSurveyServiceImplTest {
     private final SurveyParticipantRepository participantRepository = mock(SurveyParticipantRepository.class);
     private final QuestionRepository questionRepository = mock(QuestionRepository.class);
     private final SurveySubmissionRepository submissionRepository = mock(SurveySubmissionRepository.class);
+    private final SurveyRepository surveyRepository = mock(SurveyRepository.class);
     private final InvitationTokenService tokenService = new InvitationTokenService();
 
     private ParticipantSurveyServiceImpl service;
@@ -39,7 +41,8 @@ class ParticipantSurveyServiceImplTest {
 
     @BeforeEach
     void setUp() {
-        service = new ParticipantSurveyServiceImpl(participantRepository, questionRepository, submissionRepository, tokenService);
+        service = new ParticipantSurveyServiceImpl(participantRepository, questionRepository, submissionRepository,
+                surveyRepository, tokenService);
 
         survey = new Survey();
         survey.setId(10L);
@@ -191,10 +194,12 @@ class ParticipantSurveyServiceImplTest {
         assertThat(participant.getIsResponded()).isTrue();
         assertThat(participant.getInvitationStatus()).isEqualTo(InvitationStatus.COMPLETED);
         assertThat(participant.getDraftAnswers()).isNull();
+        verify(surveyRepository).incrementResponseCount(10L);
 
-        // AS-01: aynı link tekrar kullanılamaz
+        // AS-01: aynı link tekrar kullanılamaz, yanıt sayacı ikinci kez artmaz
         assertThatThrownBy(() -> service.submit(10L, TOKEN, validRequest()))
                 .isInstanceOfSatisfying(InvitationAccessException.class, e -> assertThat(e.getReason()).isEqualTo(Reason.ANSWERED));
+        verify(surveyRepository, times(1)).incrementResponseCount(10L);
     }
 
     @Test
@@ -216,7 +221,7 @@ class ParticipantSurveyServiceImplTest {
         assertThatThrownBy(() -> service.submit(10L, TOKEN, request))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("1. soru zorunludur");
-        verifyNoInteractions(submissionRepository);
+        verifyNoInteractions(submissionRepository, surveyRepository);
         assertThat(participant.getIsResponded()).isFalse();
     }
 

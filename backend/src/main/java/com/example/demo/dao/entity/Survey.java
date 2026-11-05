@@ -29,6 +29,20 @@ public class Survey {
     private LocalDateTime createdDateTime;
     private LocalDateTime updatedDateTime;
 
+    /*
+     * Anketlerim listesi için önceden hesaplanmış sayaçlar: liste her açıldığında survey_participant tablosunu
+     * join edip saymamak için tutulur.
+     * - participantCount: katılımcı listesi yalnızca oluşturma/taslak düzenlemede değişir, applyContent set eder.
+     * - responseCount: yalnızca SurveyRepository.incrementResponseCount (atomik UPDATE) ile artar. updatable=false,
+     *   böylece eşzamanlı bir yanıt sırasında başka bir işlemin elindeki eski Survey nesnesini kaydetmesi sayacı geri
+     *   yazamaz.
+     */
+    @Column(nullable = false)
+    private long participantCount = 0;
+
+    @Column(nullable = false, updatable = false)
+    private long responseCount = 0;
+
     @OneToMany(mappedBy = "survey", cascade = CascadeType.ALL, orphanRemoval = true)
     @OrderBy("questionOrder ASC")
     private List<Question> questionList = new ArrayList<>();
