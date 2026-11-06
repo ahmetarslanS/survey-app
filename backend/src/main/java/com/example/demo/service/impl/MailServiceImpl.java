@@ -13,21 +13,12 @@ import org.springframework.mail.javamail.MimeMessageHelper;
 import org.springframework.stereotype.Service;
 import org.springframework.web.util.HtmlUtils;
 
-import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
 import java.util.Objects;
-import java.util.UUID;
 
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class MailServiceImpl implements MailService {
-
-    private static final DateTimeFormatter OUTBOX_FILE_TIME = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss");
 
     private final JavaMailSender mailSender;
     private final MailDeliveryProperties properties;
@@ -42,11 +33,6 @@ public class MailServiceImpl implements MailService {
     public void sendInvitation(Survey survey, String recipient, String surveyLink) {
         String subject = "Anket Daveti: " + Objects.toString(survey.getTitle(), "");
         String html = buildMailContent(survey, surveyLink);
-
-        if (!properties.enabled()) {
-            writeToOutbox(survey, recipient, subject, html);
-            return;
-        }
 
         int attempts = Math.max(1, properties.maxAttempts());
         RuntimeException lastError = null;
@@ -66,22 +52,6 @@ public class MailServiceImpl implements MailService {
             }
         }
         throw lastError;
-    }
-
-    /** Geliştirme modu: mail gönderilmez, outbox klasörüne yazılır. */
-    private void writeToOutbox(Survey survey, String recipient, String subject, String html) {
-        try {
-            Path dir = Path.of(properties.outboxDir());
-            Files.createDirectories(dir);
-            String fileName = "survey-" + survey.getId() + "-" + LocalDateTime.now().format(OUTBOX_FILE_TIME)
-                    + "-" + UUID.randomUUID().toString().substring(0, 8) + ".html";
-            String content = "<!-- To: " + HtmlUtils.htmlEscape(recipient) + " | Subject: "
-                    + HtmlUtils.htmlEscape(subject) + " -->\n" + html;
-            Files.writeString(dir.resolve(fileName), content, StandardCharsets.UTF_8);
-            log.info("app.mail.enabled=false: davet maili outbox'a yazıldı ({}).", dir.resolve(fileName));
-        } catch (IOException e) {
-            throw new IllegalStateException("Mail outbox'a yazılamadı", e);
-        }
     }
 
     private String buildMailContent(Survey survey, String surveyLink) {

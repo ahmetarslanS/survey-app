@@ -57,6 +57,7 @@ T-30..T-37 tamamlandı (bkz. Tamamlananlar). Kalan ilgili işler:
 - [ ] **T-14 Anket kopyalama / arşivleme / silme** (M · FR-11, BR-08).
 - [ ] **T-15 Katılımcı bazında davet durumu ekranı** (S · FR-45): `SurveyParticipant.invitationStatus` hazır;
   admin için listeleme endpointi + ekran gerekli (anonim modda yalnızca tamamlanma durumu, Q-03).
+- [ ] **T-46 CI**: imaj derleme + `./gradlew test` (PostgreSQL servisiyle) + frontend lint/build (GitHub Actions).
 - [ ] **T-17 `ddl-auto=create` → `update` veya migration (Flyway)**: şu an her başlatmada veri siliniyor. Migration'a
   geçilirken mevcut veride `survey.participant_count` / `response_count` sayaçları `survey_participant`'tan doldurulmalı.
 
@@ -159,3 +160,22 @@ T-30..T-37 tamamlandı (bkz. Tamamlananlar). Kalan ilgili işler:
 - [x] Önizle her zaman yeni sekmede (sabit pencere adı, tekrar basınca aynı sekme güncellenir); soru yoksa önizlemede
   bilgi mesajı. `/survey-preview` oturum gerektirmiyor (sessionStorage yeni sekmeye taşınmadığında login'e düşüyordu)
 - Ekranlar Edge (Playwright, headless) ile 1366×657'de ekran görüntüsüyle doğrulandı
+- [x] Docker deployment: `backend/Dockerfile` (JDK 21 derleme → JRE 21, root olmayan kullanıcı, TZ Europe/Istanbul,
+  healthcheck), `frontend/Dockerfile` (Node 24 build → nginx; SPA fallback, `/api` proxy, önbellek ve güvenlik
+  başlıkları, `Referrer-Policy: no-referrer`), `docker-compose.yml` (PostgreSQL 17 + volume'ler + healthcheck sırası),
+  `.env.example`, `DEPLOYMENT.md`. Backend: DB/mail/ddl/show-sql ayarları ortam değişkeniyle ezilebilir, actuator
+  `/actuator/health` (mail kontrolü kapalı), `FORWARD_HEADERS_STRATEGY=native` ile nginx arkasında gerçek istemci IP'si
+  (rate limit doğrulandı). Jar container ortam değişkenleriyle yerelde çalıştırılıp doğrulandı; **imajlar Docker
+  olmadığı için derlenip denenmedi** (T-45)
+
+### 2026-11-06
+
+- [x] **T-45** Docker'da uçtan uca doğrulandı (WSL2 + Rancher Desktop 1.25.0 kuruldu): 3 servis healthy, imajlar
+  backend 572 MB / frontend 97 MB. SPA fallback, güvenlik/önbellek başlıkları, gzip, giriş → taslak → gönderim (outbox'ta
+  2 davet, link `FRONTEND_URL` ile) → katılımcı yanıtı → tekrar yanıt 409 → liste sayaçları → CSV çalıştı. Container
+  saat dilimi +03, kullanıcı `app`, loglarda token/e-posta yok. `/api/actuator/*` nginx'te 404'e bağlandı
+- [x] Kökte `README.md` (özellikler, ekran görüntüleri, Docker hızlı başlangıç, yerel geliştirme, API, yapı) ve
+  `docs/screenshots/` (Playwright + Edge, örnek veriyle 1440×900)
+- [x] Mail outbox modu (`app.mail.enabled=false` → `.html` dosyası) kaldırıldı: çok mailde dosyalar birikiyordu. Davetler
+  her zaman SMTP ile gider; `APP_MAIL_ENABLED`, `MAIL_OUTBOX_DIR`, `mail-outbox` volume'ü kaldırıldı. Compose'da
+  `MAIL_USERNAME`/`MAIL_PASSWORD` zorunlu

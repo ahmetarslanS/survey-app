@@ -1,0 +1,10 @@
+# Yerel sırlar imaja ASLA girmemeli
+application-local.properties
+
+.gradle
+build
+bin
+out
+.idea
+*.iml
+HELP.md

@@ -31,10 +31,20 @@ survey/
 - **Backend:** `cd backend; .\gradlew.bat bootRun` → http://localhost:8080
   - PostgreSQL `localhost:5432/dfx_survey_db`, kullanıcı `dfx_user`
   - `spring.jpa.hibernate.ddl-auto=create`: **her başlatmada tablolar silinir.**
-  - Gmail SMTP tanımlı, anket gönderiminde katılımcılara **gerçek mail gider**. Gerçek mail istemiyorsan
-    `$env:APP_MAIL_ENABLED='false'` ile başlat: davet mailleri `backend/build/mail-outbox/*.html` dosyalarına yazılır,
-    katılımcı linkini oradan alabilirsin.
+  - Gmail SMTP tanımlı, anket gönderiminde katılımcılara **her zaman gerçek mail gider** (outbox/.html modu kullanıcı
+    isteğiyle 2026-11-06'da kaldırıldı). Testte katılımcı olarak yalnızca gönderici hesabı `developerschooldfx@gmail.com`
+    veya kullanıcının verdiği adresleri kullan; rastgele adrese mail atma. Mail içeriği/linki görülemediği için
+    katılımcı akışını test ederken token'ı DB'den alamazsın (yalnızca hash var).
 - Backend'de CORS yok. Frontend istekleri Vite proxy'si ile gider: `/api/*` → `localhost:8080/*`.
+- **Docker / deployment:** [DEPLOYMENT.md](DEPLOYMENT.md). `docker-compose.yml` (db + backend + frontend/nginx),
+  `backend/Dockerfile`, `frontend/Dockerfile` + `frontend/nginx/`. Ortam değişkenleri kökteki `.env` (git dışı, şablon
+  `.env.example`). Backend ayarları `application.properties`'te `${ENV:yerel-varsayılan}` biçiminde. Yeni bir ayar
+  eklerken sunucuda değişmesi gerekiyorsa aynı biçimde yaz ve compose/.env.example'a ekle.
+  Bu makinede Docker = **Rancher Desktop** (dockerd/moby; Docker Desktop lisans nedeniyle kullanılmıyor). Yeni PowerShell
+  oturumunda PATH'i tazele: `$env:Path = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Environment]::GetEnvironmentVariable('Path','User')`.
+  Yerel `.env`: `HTTP_PORT=8088` → http://localhost:8088 (DB/mail şifreleri `application-local.properties` ile aynı).
+  Ekran görüntüleri Playwright (`playwright-core`, `channel: 'msedge'`) ile alınabilir.
+- **README:** kökte [README.md](README.md); görseller `docs/screenshots/`. Ekran veya özellik değişince güncelle.
 - **Sırlar (repo public!):** şifreler/anahtarlar `application.properties`'te tutulmaz. Yerelde
   `backend/application-local.properties` (git dışı; şablon `backend/application-local.example.properties`), sunucuda
   ortam değişkenleri: `DB_PASSWORD`, `MAIL_PASSWORD`, `JWT_SECRET` (≥32 karakter), `ADMIN_PASSWORD`. Bu dosyaya veya

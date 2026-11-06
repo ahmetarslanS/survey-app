@@ -1,0 +1,65 @@
+# Survey Tool — tek sunucuda çalıştırma
+#   cp .env.example .env    # değerleri doldurun
+#   docker compose up -d --build
+# Ayrıntılar: DEPLOYMENT.md
+name: survey-tool
+
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME:-dfx_survey_db}
+      POSTGRES_USER: ${DB_USERNAME:-dfx_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD .env dosyasında tanımlanmalı}
+      TZ: Europe/Istanbul
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    # Port dışarı açılmaz; yalnızca backend erişir. Yerelden bağlanmak gerekirse:
+    # ports: ["127.0.0.1:5432:5432"]
+
+  backend:
+    build: ./backend
+    image: survey-tool/backend:${APP_VERSION:-latest}
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DB_URL: jdbc:postgresql://db:5432/${DB_NAME:-dfx_survey_db}
+      DB_USERNAME: ${DB_USERNAME:-dfx_user}
+      DB_PASSWORD: ${DB_PASSWORD}
+      # update: tablolar korunur, yeni kolonlar eklenir. (create her açılışta veriyi siler; Docker'da kullanmayın.)
+      DDL_AUTO: ${DDL_AUTO:-update}
+      SHOW_SQL: "false"
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET .env dosyasında tanımlanmalı (en az 32 karakter)}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@teamdefinex.com}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?ADMIN_PASSWORD .env dosyasında tanımlanmalı}
+      MAIL_HOST: ${MAIL_HOST:-smtp.gmail.com}
+      MAIL_PORT: ${MAIL_PORT:-587}
+      MAIL_USERNAME: ${MAIL_USERNAME:?MAIL_USERNAME .env dosyasında tanımlanmalı}
+      MAIL_PASSWORD: ${MAIL_PASSWORD:?MAIL_PASSWORD .env dosyasında tanımlanmalı (davet mailleri SMTP ile gönderilir)}
+      # Davet linklerinin başına eklenen, kullanıcıların tarayıcıda açtığı adres
+      FRONTEND_URL: ${FRONTEND_URL:?FRONTEND_URL .env dosyasında tanımlanmalı (ör. https://survey.example.com)}
+      # nginx'in X-Forwarded-For başlığından gerçek istemci IP'si (rate limit için)
+      FORWARD_HEADERS_STRATEGY: native
+    expose:
+      - "8080"
+
+  frontend:
+    build: ./frontend
+    image: survey-tool/frontend:${APP_VERSION:-latest}
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "${HTTP_PORT:-80}:80"
+
+volumes:
+  pgdata:

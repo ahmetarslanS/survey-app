@@ -52,6 +52,8 @@ public class SecurityConfig {
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(HttpMethod.POST, "/admin/auth/login").permitAll()
                         .requestMatchers("/user/**", "/error").permitAll()
+                        // Container sağlık kontrolü; nginx bu yolu dışarıya açmaz
+                        .requestMatchers(HttpMethod.GET, "/actuator/health").permitAll()
                         .requestMatchers("/admin/**").hasAnyRole("ADMIN", "SYSTEM_ADMIN")
                         .anyRequest().authenticated()
                 )

@@ -48,7 +48,7 @@ src/
 | --- | --- | --- |
 | S-01 Giriş | `/login` | `LoginPage` |
 | S-02 Anketlerim | `/surveys` | `SurveyListPage` |
-| S-03/04/05/06 Anket oluşturma + modallar | `/surveys/new` | `SurveyBuilderPage` |
+| S-03/04/05/06 Anket oluşturma + modallar | `/surveys/new`, `/surveys/:surveyId/edit` (taslak) | `SurveyBuilderPage` |
 | S-07 Rapor | `/surveys/:surveyId/report` | `SurveyReportPage` |
 | Şablonlar | `/templates` | `TemplatesPage` |
 | Raporlar | `/reports` | `ReportsPage` |

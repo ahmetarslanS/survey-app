@@ -38,3 +38,5 @@ out/
 
 ### Yerel sırlar ###
 application-local.properties
+# docker compose ortam dosyası (şablon: .env.example)
+/.env
